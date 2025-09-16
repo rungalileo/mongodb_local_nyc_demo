@@ -1,4 +1,5 @@
 from re import U
+import asyncio
 import time
 import random
 from typing import Dict, Any, List
@@ -6,6 +7,7 @@ from pydantic import BaseModel
 from app.models.policy_output import PolicyOutput
 from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput, ToolReceipt
+from app.models.order import Order
 from app.toggles import ToggleManager
 from galileo import log
 
@@ -58,7 +60,7 @@ class ActionAgent:
         
         for tool_name in tools_to_call:
             if tool_name in self.available_tools:
-                receipt = self._execute_tool(tool_name, user_query, user_id, policy_output, records_output, latest_sentiment)
+                receipt = await self._execute_tool(tool_name, user_query, user_id, policy_output, records_output, latest_sentiment)
                 tool_receipts.append(receipt.dict())
                 total_cost += self._calculate_tool_cost(tool_name)
         
@@ -189,13 +191,13 @@ class ActionAgent:
 
 
     ## TOOLS ##
-    def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> ToolReceipt:
+    async def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> ToolReceipt:
         """Execute a specific tool"""
         tool_start = time.time()
         
         try:
             tool_func = self.available_tools[tool_name]
-            response = tool_func(user_query, user_id, policy_output, records_output, latest_sentiment)
+            response = await tool_func(user_query, user_id, policy_output, records_output, latest_sentiment)
             
             latency = (time.time() - tool_start) * 1000
             
@@ -314,8 +316,22 @@ class ActionAgent:
             "status_message": "Refund state explained"
         }
     
+    @log(span_type="llm", name="Order Status Analysis")
+    async def fake_llm_hallucination(self, user_query: str, latest_order: Order):
+        """Fake LLM call that hallucinates order status"""
+        # Return hallucinated response
+        return "delivered"
+
+    @log(span_type="llm", name="Order Status Analysis")
+    async def real_llm_analysis(self, user_query: str, latest_order: Order):
+        """Real LLM call that returns actual database status"""
+        # Simulate LLM processing time
+        await asyncio.sleep(0.1)
+        # Return actual status from database
+        return latest_order.status
+        
     @log(span_type="tool", name="Explain Order State")
-    def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Explain the current state of user orders"""
         time.sleep(random.uniform(0.05, 0.1))
         orders = records_output.orders
@@ -325,27 +341,48 @@ class ActionAgent:
         else:
             # Get the most recent order
             latest_order = orders[0]  # Assuming sorted by date
-            status = latest_order.status if hasattr(latest_order, 'status') else latest_order.get("status", "unknown")
             product_name = latest_order.product_name if hasattr(latest_order, 'product_name') else latest_order.get("product_name", "unknown product")
             order_date = latest_order.order_date if hasattr(latest_order, 'order_date') else latest_order.get("order_date", "unknown date")
             
-            status_explanations = {
-                "delivered": "Your order has been successfully delivered and is ready for use.",
-                "shipped": "Your order has been shipped and is on its way to you.",
-                "processing": "Your order is currently being processed and prepared for shipment.",
-                "returned": "This order has been returned and refunded.",
-                "cancelled": "This order has been cancelled.",
-                "pending": "Your order is pending confirmation."
-            }
-            
-            explanation = f"Regarding your inquiry: {user_query[:100]}... "
+            # Special case for user_007 - fake LLM hallucination
             if user_id == "user_007":
-                # Special case for user_007 - show as delivered even if actually in transit
-                explanation += f"Order Status: {status_explanations.get('delivered', 'Status: delivered')}. "
+                # Call the fake LLM function
+                hallucinated_status = await self.fake_llm_hallucination(user_query, latest_order)
+                
+                status_explanations = {
+                    "delivered": "Your order has been successfully delivered and is ready for use.",
+                    "shipped": "Your order has been shipped and is on its way to you.",
+                    "processing": "Your order is currently being processed and prepared for shipment.",
+                    "returned": "This order has been returned and refunded.",
+                    "cancelled": "This order has been cancelled.",
+                    "pending": "Your order is pending confirmation."
+                }
+                
+                explanation = f"Regarding your inquiry: {user_query[:100]}... "
+                explanation += f"Order Status: {status_explanations.get(hallucinated_status, 'Status: delivered')}. "
+                explanation += f"Product: {product_name}. "
+                explanation += f"Order Date: {order_date}. "
+                explanation += f"[WARNING: LLM may have hallucinated this status - actual status: {hallucinated_status}]"
             else:
-                explanation += f"Order Status: {status_explanations.get(status, f'Status: {status}')}. "
-            explanation += f"Product: {product_name}. "
-            explanation += f"Order Date: {order_date}."
+                # Real LLM call for other users (but just returns status from database)
+
+                
+                # Call the real LLM function
+                actual_status = await self.real_llm_analysis(user_query, latest_order)
+                
+                status_explanations = {
+                    "delivered": "Your order has been successfully delivered and is ready for use.",
+                    "shipped": "Your order has been shipped and is on its way to you.",
+                    "processing": "Your order is currently being processed and prepared for shipment.",
+                    "returned": "This order has been returned and refunded.",
+                    "cancelled": "This order has been cancelled.",
+                    "pending": "Your order is pending confirmation."
+                }
+                
+                explanation = f"Regarding your inquiry: {user_query[:100]}... "
+                explanation += f"Order Status: {status_explanations.get(actual_status, f'Status: {actual_status}')}. "
+                explanation += f"Product: {product_name}. "
+                explanation += f"Order Date: {order_date}."
             
             # Add information about multiple orders if applicable
             if len(orders) > 1:
