@@ -9,27 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 import argparse
 import asyncio
-import os
 import sys
 from typing import Dict, Any
-from dotenv import load_dotenv
-
-
-# Initialize Galileo BEFORE importing modules that use @log decorators
-try:
-    from galileo import galileo_context
-    
-    # Get configuration from environment variables
-    project_name = os.getenv('GALILEO_PROJECT', 'ai_ops_desk')
-    log_stream = os.getenv('GALILEO_LOG_STREAM', 'dev-1')
-    
-    # Initialize Galileo context
-    galileo_context.init(project=project_name, log_stream=log_stream)
-    print(f"✅ Galileo initialized - Project: {project_name}, Log Stream: {log_stream}")
-except ImportError:
-    print("⚠️  Galileo SDK not installed. Logging will be disabled.")
-except Exception as e:
-    print(f"⚠️  Failed to initialize Galileo: {e}. Logging will be disabled.")
 
 # Now import modules that use @log decorators
 from app.graph import create_ops_desk_graph

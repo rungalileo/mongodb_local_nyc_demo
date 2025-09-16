@@ -2,14 +2,18 @@
 
 A sophisticated multi-agent AI system for handling customer service operations including refund requests, support tickets, and policy management.
 
+
+<img src="image.png" alt="Multi-Agent Flow" width="600"/>
+
+
 ## Overview
 
 This demo showcases:
+- **Galileo** as an observability and evaluation tool
 - **MongoDB Atlas** as a RAG store with Vector Search for policy retrieval
 - **OpenAI** for LLM operations and embeddings
 - **LangGraph** orchestration with 4 specialized agents
-- **Structured data models** for orders, refund requests, and support tickets
-- **LLM-based intent classification** and sentiment analysis
+- **Other goodies:** Sturctured data models for compliance-y stuff, sentiment analysis and intent classification, the usual
 
 ## Architecture
 
@@ -36,6 +40,7 @@ This demo showcases:
 - Python 3.11+
 - MongoDB Atlas connection string
 - OpenAI API key
+- Galileo Account
 
 ## Quickstart
 
@@ -66,82 +71,16 @@ This demo showcases:
 
 5. **Run scenarios**
    ```bash
-   # Happy path scenario
    python main.py --scenario refund_bluetooth_earbuds
-   
-   # Policy drift scenario (uses expired policies)
-   python main.py --scenario refund_bluetooth_earbuds --toggles drift
+
+   # OR to run the scenario by its number
+
+   python main.py --index 0->6
    ```
-
-## Configuration
-
-### Environment Variables
-- `MONGODB_URI`: MongoDB Atlas connection string
-- `OPENAI_API_KEY`: OpenAI API key for LLM operations
-- `MONGODB_DATABASE`: Database name (default: ai_ops_desk)
-
-### Feature Toggles
-- `POLICY_FORCE_OLD_VERSION`: Force use of expired policies for drift simulation (enabled in "drift" scenario)
-- `REFUND_API_ERROR_RATE`: Simulate API failures (0.0-1.0)
-
-### Scenarios
-- **refund_bluetooth_earbuds**: Customer requesting refund for bluetooth earbuds
+   We also have a toggle manager to activate different failure states, but more on that later
 
 ### Available Toggles
 - **drift**: Simulates policy drift by forcing use of expired policies
-
-### Usage Examples
-```bash
-# Normal operation
-python main.py --scenario refund_bluetooth_earbuds
-
-# With policy drift
-python main.py --scenario refund_bluetooth_earbuds --toggles drift
-
-# Multiple toggles (comma-separated)
-python main.py --scenario refund_bluetooth_earbuds --toggles drift,other_toggle
-```
-
-## Data Setup
-
-The system includes comprehensive setup scripts:
-
-- **`setup_policies.py`**: Creates policy documents with vector embeddings
-- **`setup_orders.py`**: Populates order data for 2 users
-- **`setup_refund_requests.py`**: Creates refund request records
-- **`setup_tickets.py`**: Generates support ticket data with sentiment
-
-Each script clears existing data before uploading new records.
-
-## Key Features
-
-### LLM-Based Classification
-- **Intent Classification**: Uses OpenAI to determine user intent (refund, inquiry, general)
-- **Sentiment Analysis**: Analyzes customer sentiment for ticket prioritization
-
-### Policy Management
-- **Vector Search**: Semantic similarity search for policy retrieval
-- **Version Control**: Policies with effective_from and effective_until dates
-- **Drift Simulation**: Can force use of expired policies for testing
-
-### Data Consistency
-- **Linked Records**: Orders, refund requests, and tickets are cross-referenced
-- **User Consistency**: Same user IDs across all data collections
-- **Status Tracking**: Comprehensive status tracking for all entities
-
-## File Structure
-
-```
-ai-ops-desk/
-├── app/
-│   ├── agents/           # Agent implementations
-│   ├── models/           # Pydantic data models
-│   ├── rag/             # MongoDB Atlas integration
-│   └── llm/             # OpenAI client
-├── setup_*.py           # Data setup scripts
-├── main.py              # Entry point
-└── requirements.txt     # Dependencies
-```
 
 ## Troubleshooting
 

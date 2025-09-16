@@ -52,7 +52,8 @@ class ActionAgent:
         if tickets:
             latest_ticket = tickets[0]  # Assuming sorted by date
             existing_sentiment = latest_ticket.customer_sentiment if hasattr(latest_ticket, 'customer_sentiment') else latest_ticket.get('customer_sentiment')
-        latest_sentiment = await self._classify_sentiment(user_query, existing_sentiment)
+        latest_sentiment = await self._classify_sentiment(user_query)
+        # latest_sentiment = await self._classify_sentiment_v2(user_query)
         
         tools_to_call = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment)
         tool_receipts: List[Dict[str, Any]] = []
@@ -96,7 +97,6 @@ class ActionAgent:
             tools.append("update_ticket")
         else:
             tools.append("create_ticket")
-
         return tools
     
     ## CLASSIFICATION ##
@@ -130,13 +130,11 @@ class ActionAgent:
             return INTENT_GENERAL
     
     @log(span_type="agent", name="Classify Sentiment")
-    async def _classify_sentiment(self, text: str, existing_sentiment: str) -> str:
+    async def _classify_sentiment(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
-        context_info = f"Previous sentiment: {existing_sentiment}" if existing_sentiment else "No previous sentiment data"
         prompt = f"""
-        Analyze the customer's sentiment based on their current message and any previous sentiment context.
-        {context_info}
+        Analyze the customer's sentiment based on their current message.
         Current customer message: "{text}"
         
         Classify the overall sentiment as one of:
@@ -160,23 +158,31 @@ class ActionAgent:
             return SENTIMENT_NEUTRAL
 
     @log(span_type="agent", name="Classify Sentiment")
-    async def _classify_sentiment_v2(self, text: str, existing_sentiment: str) -> str:
+    async def _classify_sentiment_v2(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
-        context_info = f"Previous sentiment: {existing_sentiment}" if existing_sentiment else "No previous sentiment data"
         prompt = f"""
-        Analyze the customer's sentiment based on their current message and any previous sentiment context.
-        {context_info}
-        Current customer message: "{text}"
-        
-        Classify the overall sentiment as one of:
-        - {SENTIMENT_NEGATIVE}: Customer is angry, frustrated, upset, or expressing dissatisfaction very very stronly. Especially if they're cursing, then they're extremely upset..
-        - {SENTIMENT_POSITIVE}: Customer is happy, satisfied, grateful, or expressing appreciation
-        - {SENTIMENT_NEUTRAL}: Customer is calm, matter-of-fact, or neither positive nor negative. Customer might be asking for refund or expressing dissatisfaction, but doesn't sound extremely upset.
-        
-        Consider both the current message and any escalation in sentiment from previous interactions.
-        
-        Respond with only the sentiment: {SENTIMENT_NEGATIVE}, {SENTIMENT_POSITIVE}, or {SENTIMENT_NEUTRAL}
+        SYSTEM:
+        You are a strict classifier for customer-service escalation SEVERITY, not generic sentiment.
+        Follow the decision procedure exactly.
+
+        DECISION PROCEDURE (apply in order):
+        1) If the message contains any of: profanity, personal insults, slurs, threats, ALL-CAPS SHOUTING (≥50% of words uppercased), or repeated exclamation (e.g., "!!!"), classify as NEGATIVE.
+        2) Else if the message expresses clear praise, gratitude, or happiness, classify as POSITIVE.
+        3) Otherwise classify as NEUTRAL, including calm complaints, dissatisfaction, returns, or refund requests.
+
+        OUTPUT:
+        Return ONE token only: negative | positive | neutral (lowercase).
+
+        EXAMPLES:
+        - "THIS SUCKS YOU SUCK EVERYONE SUCKS HOW DARE YOU" -> negative
+        - "I need a refund for my bluetooth electronics purchase, I don't like the product" -> neutral
+        - "I really didn't like the product, I'm returning it" -> neutral
+        - "I'm not happy with my speaker system, the sound quality is not what I expected" -> neutral
+        - "Thanks so much for the quick replacement!" -> positive
+
+        MESSAGE:
+        {text}
         """
         
         try:

@@ -60,6 +60,11 @@ class AtlasClient:
         ]
         
         results = list(self.db.policies.aggregate(pipeline))
+        
+        # Remove embeddings from results to reduce payload size
+        for policy in results:
+            policy.pop("embedding", None)
+        
         return results
 
     @log(span_type="tool", name="Get User Refund Requests")
@@ -105,6 +110,9 @@ class AtlasClient:
             
             try:
                 results = list(self.db.orders.aggregate(pipeline))
+                # Remove embeddings from results to reduce payload size
+                for order in results:
+                    order.pop("embedding", None)
                 return results
             except Exception as e:
                 print(f"[ATLAS] Vector search failed: {e}")
@@ -114,6 +122,9 @@ class AtlasClient:
             # Fallback to simple user_id query
             query = {"user_id": user_id}
             results = list(self.db.orders.find(query).limit(1))
+            # Remove embeddings from results to reduce payload size
+            for order in results:
+                order.pop("embedding", None)
             print(f"[ATLAS] Simple query results: {len(results)} orders found")
             return results
 
