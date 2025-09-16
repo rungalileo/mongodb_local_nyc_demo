@@ -23,7 +23,6 @@ VALID_SENTIMENTS = [SENTIMENT_NEGATIVE, SENTIMENT_POSITIVE, SENTIMENT_NEUTRAL]
 
 
 
-
 class ActionAgent:
     """A5: Action Agent - External API calls and tool execution"""
     
@@ -182,6 +181,7 @@ class ActionAgent:
                 response={"error": str(e)}
             )
 
+    @log(span_type="tool", name="Create Refund Request")
     def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new refund request"""
         time.sleep(random.uniform(0.05, 0.15))
@@ -206,6 +206,7 @@ class ActionAgent:
             "status_message": "Refund request created"
         }
 
+    @log(span_type="tool", name="Create Ticket")
     def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new support ticket"""
         time.sleep(random.uniform(0.05, 0.2))
@@ -220,6 +221,7 @@ class ActionAgent:
             "status_message": "Ticket created"
         }
 
+    @log(span_type="tool", name="Update Ticket")
     def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate updating an existing support ticket"""
         time.sleep(random.uniform(0.05, 0.15))
@@ -233,6 +235,7 @@ class ActionAgent:
             "status_message": "Ticket updated"
         }
 
+    @log(span_type="tool", name="Escalate Ticket")
     def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate ticket escalation"""
         time.sleep(random.uniform(0.1, 0.3))
@@ -246,6 +249,7 @@ class ActionAgent:
             "status_message": "Ticket escalated to tier 2 support"
         }
     
+    @log(span_type="tool", name="Explain Refund State")
     def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Explain the current state of refund requests"""
         time.sleep(random.uniform(0.05, 0.1))
