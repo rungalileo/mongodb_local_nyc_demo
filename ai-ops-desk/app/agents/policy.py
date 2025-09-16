@@ -36,14 +36,20 @@ class PolicyAgent:
         
         print(f"[POLICY] Processing query for {user_id}: { user_query[:100]}...")
         # import pdb;pdb.set_trace()
-        # Determine region from order shipping address
-        country = order.shipping_address.get("country", "").upper()
-        if country in ["US", "USA", "UNITED STATES"]:
+        
+        # Handle case where order is None
+        if order is None:
+            print(f"[POLICY] No order found for user {user_id}, using default US region")
             region = "US"
-        elif country in ["UK", "GB", "UNITED KINGDOM", "FR", "FRANCE", "DE", "GERMANY", "IT", "ITALY", "ES", "SPAIN"]:
-            region = "EU"
         else:
-            region = "EU"  # Default to EU
+            # Determine region from order shipping address
+            country = order.shipping_address.get("country", "").upper()
+            if country in ["US", "USA", "UNITED STATES"]:
+                region = "US"
+            elif country in ["UK", "GB", "UNITED KINGDOM", "FR", "FRANCE", "DE", "GERMANY", "IT", "ITALY", "ES", "SPAIN"]:
+                region = "EU"
+            else:
+                region = "EU"  # Default to EU
         
         # Check if we should force old version (for drift scenario)
         use_latest = not self.toggles.policy_force_old_version

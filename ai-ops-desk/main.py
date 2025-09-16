@@ -35,7 +35,38 @@ except Exception as e:
 from app.graph import create_ops_desk_graph
 from app.toggles import ToggleManager
 
-
+# Define scenario-specific queries
+SCENARIOS = {
+    "refund_bluetooth_earbuds": {
+        "user_query": "I need a refund for my bluetooth electronics purchase, I don't like the product",
+        "user_id": "user_001",
+    }, 
+    "refund_dryer": {
+        "user_query": "I'm SICK OF ORDERING EVERYTHING and RETURNING EVERYTHING. Y'all aren't a good company. refund my tablet",
+        "user_id": "user_002",
+    },
+    "refund_gaming_mouse": {
+        "user_query": "My gaming mouse is broken, the scroll wheel stopped working after just a few days",
+        "user_id": "user_003",
+    },
+    "refund_air_purifier": {
+        "user_query": "I want to return my air purifier, I changed my mind about needing it",
+        "user_id": "user_004",
+    },
+    "refund_coffee_maker": {
+        "user_query": "My coffee maker stopped working, it won't heat water anymore",
+        "user_id": "user_005",
+    },
+    "refund_speakers": {
+        "user_query": "I'm not happy with my speaker system, the sound quality is not what I expected",
+        "user_id": "user_006",
+    },
+    "enquire_status_of_order": {
+        "user_query": "Was my costume delivered?",
+        "user_id": "user_007",
+    }
+}
+    
 async def run_scenario(scenario: str, toggles_provided: list[str]) -> Dict[str, Any]:
     """Run a specific test scenario"""
     # import pdb;pdb.set_trace()
@@ -49,22 +80,10 @@ async def run_scenario(scenario: str, toggles_provided: list[str]) -> Dict[str, 
     # Create the agent graph
     graph = await create_ops_desk_graph()
     
-    # Define scenario-specific queries
-    queries = {
-        "refund_bluetooth_earbuds": {
-            "user_query": "I need a refund for my bluetooth electronics purchase, I don't like the product",
-            "user_id": "user_001",
-        }, 
-        "refund_dryer": {
-            "user_query": "I need a refund for my dryer purchase, I accidentally bought it in the wrong size",
-            "user_id": "user_002",
-        }
-    }
+    if scenario not in SCENARIOS:
+        raise ValueError(f"Unknown scenario: {scenario}. Available: {list(SCENARIOS.keys())}")
     
-    if scenario not in queries:
-        raise ValueError(f"Unknown scenario: {scenario}. Available: {list(queries.keys())}")
-    
-    query = queries[scenario]
+    query = SCENARIOS[scenario]
     
     print(f"\n{'='*60}")
     print(f"Running scenario: {scenario.upper()}")
@@ -82,17 +101,16 @@ async def run_scenario(scenario: str, toggles_provided: list[str]) -> Dict[str, 
     return result
 
 
-
-
 async def main():
     """Main entry point"""
 
     parser = argparse.ArgumentParser(description="AI Operations Desk Demo")
     parser.add_argument(
-        "--scenario", 
-        choices=["refund_bluetooth_earbuds", "refund_dryer"],
-        default="refund_bluetooth_earbuds",
-        help="Test scenario to run"
+        "--index", 
+        type=int,
+        choices=list(range(len(SCENARIOS))),
+        default=0,
+        help="Index of scenario to run"
     )
     parser.add_argument(
         "--toggles",
@@ -105,10 +123,12 @@ async def main():
     toggles_provided = []
     if args.toggles:
         toggles_provided = args.toggles
-    
     try:
-        # Run the scenario
-        result = await run_scenario(args.scenario, toggles_provided)
+        # Get scenario by index
+        scenario_names = list(SCENARIOS.keys())
+        scenario = scenario_names[args.index]
+        
+        result = await run_scenario(scenario, toggles_provided)
         
         # Print results
         print(f"\n{'='*60}")
@@ -124,14 +144,12 @@ async def main():
         
         # Success/failure based on status
         if result.get('status') == 'completed':
-            print(f"\n✅ Scenario '{args.scenario}' completed successfully!")
-            return 0
+            print(f"\n✅ Scenario '{scenario}' completed successfully!")
         else:
-            print(f"\n❌ Scenario '{args.scenario}' failed!")
-            return 1
-            
+            print(f"\n❌ Scenario '{scenario}' failed!")
+  
     except Exception as e:
-        print(f"\n❌ Error running scenario '{args.scenario}': {e}")
+        print(f"\n❌ Error running scenario '{scenario}': {e}")
         import traceback
         traceback.print_exc()
         return 1
