@@ -9,7 +9,7 @@ from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput, ToolReceipt
 from app.models.order import Order
 from app.toggles import ToggleManager
-from galileo import log
+# from galileo import log
 
 # Intent classification constants
 INTENT_REFUND_REQUEST = "refund_request"
@@ -41,7 +41,7 @@ class ActionAgent:
         }
         self.toggles = ToggleManager()
     
-    @log(span_type="agent", name="Process")
+    #@log(span_type="agent", name="Process")
     async def process(self, user_id: str, user_query: str, policy_output: PolicyOutput, records_output: RecordsOutput) -> ActionOutput:
         tickets = records_output.tickets
         requests = records_output.requests
@@ -73,7 +73,7 @@ class ActionAgent:
             cost_token_usd=total_cost,
         )
     
-    @log(span_type="agent", name="Determine Tools")
+    #@log(span_type="agent", name="Determine Tools")
     async def _determine_tools(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> List[str]:
         """Determine which tools to call based on context"""
         tools = []
@@ -97,10 +97,11 @@ class ActionAgent:
             tools.append("update_ticket")
         else:
             tools.append("create_ticket")
+
         return tools
     
     ## CLASSIFICATION ##
-    @log(span_type="agent", name="Classify Intent")
+    #@log(span_type="agent", name="Classify Intent")
     async def _classify_intent(self, text: str, context: Dict[str, Any]) -> str:
 
         """Classify user intent using LLM"""
@@ -129,7 +130,7 @@ class ActionAgent:
             print(f"Error in intent classification: {e}")
             return INTENT_GENERAL
     
-    @log(span_type="agent", name="Classify Sentiment")
+    #@log(span_type="agent", name="Classify Sentiment")
     async def _classify_sentiment(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
@@ -157,7 +158,7 @@ class ActionAgent:
             print(f"Error in sentiment classification: {e}")
             return SENTIMENT_NEUTRAL
 
-    @log(span_type="agent", name="Classify Sentiment")
+    #@log(span_type="agent", name="Classify Sentiment")
     async def _classify_sentiment_v2(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
@@ -222,7 +223,7 @@ class ActionAgent:
                 response={"error": str(e)}
             )
 
-    @log(span_type="tool", name="Create Refund Request")
+    #@log(span_type="tool", name="Create Refund Request")
     def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new refund request"""
         time.sleep(random.uniform(0.05, 0.15))
@@ -247,7 +248,7 @@ class ActionAgent:
             "status_message": "Refund request created"
         }
 
-    @log(span_type="tool", name="Create Ticket")
+    #@log(span_type="tool", name="Create Ticket")
     def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new support ticket"""
         time.sleep(random.uniform(0.05, 0.2))
@@ -262,7 +263,7 @@ class ActionAgent:
             "status_message": "Ticket created"
         }
 
-    @log(span_type="tool", name="Update Ticket")
+    #@log(span_type="tool", name="Update Ticket")
     def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate updating an existing support ticket"""
         time.sleep(random.uniform(0.05, 0.15))
@@ -276,7 +277,7 @@ class ActionAgent:
             "status_message": "Ticket updated"
         }
 
-    @log(span_type="tool", name="Escalate Ticket")
+    #@log(span_type="tool", name="Escalate Ticket")
     def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate ticket escalation"""
         time.sleep(random.uniform(0.1, 0.3))
@@ -290,7 +291,7 @@ class ActionAgent:
             "status_message": "Ticket escalated to tier 2 support"
         }
     
-    @log(span_type="tool", name="Explain Refund State")
+    #@log(span_type="tool", name="Explain Refund State")
     def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Explain the current state of refund requests"""
         time.sleep(random.uniform(0.05, 0.1))
@@ -322,13 +323,13 @@ class ActionAgent:
             "status_message": "Refund state explained"
         }
     
-    @log(span_type="llm", name="Order Status Analysis")
+    #@log(span_type="llm", name="Order Status Analysis")
     async def fake_llm_hallucination(self, user_query: str, latest_order: Order):
         """Fake LLM call that hallucinates order status"""
         # Return hallucinated response
         return "delivered"
 
-    @log(span_type="llm", name="Order Status Analysis")
+    #@log(span_type="llm", name="Order Status Analysis")
     async def real_llm_analysis(self, user_query: str, latest_order: Order):
         """Real LLM call that returns actual database status"""
         # Simulate LLM processing time
@@ -336,7 +337,7 @@ class ActionAgent:
         # Return actual status from database
         return latest_order.status
         
-    @log(span_type="tool", name="Explain Order State")
+    #@log(span_type="tool", name="Explain Order State")
     async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Explain the current state of user orders"""
         time.sleep(random.uniform(0.05, 0.1))
