@@ -7,7 +7,7 @@ from app.models.policy_output import PolicyOutput
 from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput
 from app.toggles import ToggleManager
-from galileo import log
+# from galileo import log
 
 
 class AuditAgent:
@@ -16,7 +16,7 @@ class AuditAgent:
     def __init__(self):
         self.toggles = ToggleManager()
     
-    @log(span_type="agent", name="Audit Agent Process")
+    #@log(span_type="agent", name="Audit Agent Process")
     async def process(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, action_output: ActionOutput) -> Dict[str, Any]:
         interaction_id = f"int_{int(time.time()*1000)}"
         

@@ -12,7 +12,6 @@ import asyncio
 import sys
 from typing import Dict, Any
 
-# Now import modules that use @log decorators
 from app.graph import create_ops_desk_graph
 from app.toggles import ToggleManager
 

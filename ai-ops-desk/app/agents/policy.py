@@ -22,7 +22,7 @@ from app.rag.queries import get_policy_context
 from app.llm.client import openai_client
 from datetime import datetime
 from app.toggles import ToggleManager
-from galileo import log
+# from galileo import log
 
 class PolicyAgent:
     """A2: Policy Agent - Knowledge synthesis using RAG"""
@@ -31,7 +31,7 @@ class PolicyAgent:
         self.llm = openai_client.client
         self.toggles = ToggleManager()
     
-    @log(span_type="agent", name="Policy Agent Process")
+    #@log(span_type="agent", name="Policy Agent Process")
     async def process(self, user_query: str, user_id: str, order:Order | None) -> PolicyOutput:
         
         print(f"[POLICY] Processing query for {user_id}: { user_query[:100]}...")
