@@ -11,7 +11,7 @@ from enum import Enum
 
 from langgraph.graph import StateGraph, END
 from typing_extensions import Annotated
-from galileo import log
+# from galileo import log
 
 from app.agents.policy import PolicyAgent
 from app.agents.records import RecordsAgent
@@ -67,7 +67,7 @@ def record_agent_timing(state: AgentState, agent_name: str, start: bool = True):
         state["agent_end_times"][agent_name] = current_time
 
 
-@log(span_type="workflow", name="Policy Node")
+#@log(span_type="workflow", name="Policy Node")
 async def policy_node(state: AgentState) -> AgentState:
     """Policy agent node"""
     print(f"🔄 [GRAPH] Entering policy node for user {state.get('user_id', 'unknown')}")
@@ -92,7 +92,7 @@ async def policy_node(state: AgentState) -> AgentState:
     return state
 
 
-@log(span_type="workflow", name="Records Node")
+#@log(span_type="workflow", name="Records Node")
 async def records_node(state: AgentState) -> AgentState:
     """Records agent node"""
     print(f"🔄 [GRAPH] Entering records node for user {state.get('user_id', 'unknown')}")
@@ -115,7 +115,7 @@ async def records_node(state: AgentState) -> AgentState:
     return state
 
 
-@log(span_type="workflow", name="Action Node")
+#@log(span_type="workflow", name="Action Node")
 async def action_node(state: AgentState) -> AgentState:
     """Action agent node"""
     print(f"🔄 [GRAPH] Entering action node for user {state.get('user_id', 'unknown')}")
@@ -138,7 +138,7 @@ async def action_node(state: AgentState) -> AgentState:
     return state
 
 
-@log(span_type="workflow", name="Audit Node")
+#@log(span_type="workflow", name="Audit Node")
 async def audit_node(state: AgentState) -> AgentState:
     """Audit agent node"""
     print(f"🔄 [GRAPH] Entering audit node for user {state.get('user_id', 'unknown')}")
