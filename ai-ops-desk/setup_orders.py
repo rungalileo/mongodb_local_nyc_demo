@@ -92,7 +92,7 @@ async def upload_orders():
             unit_price=129.99,
             currency="USD",
             order_date=datetime(2024, 8, 5),
-            shipping_address={"city": "New York", "country": "US"},
+            shipping_address={"city": "London", "country": "UK"},
             status="delivered",
         ),
         # User 2 - returned all items (has tickets and refund requests)

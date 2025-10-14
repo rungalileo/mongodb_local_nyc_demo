@@ -9,12 +9,24 @@ from typing import Dict, Any
 
 
 class ToggleManager:
-    """Toggle manager for failure injection scenarios"""
+    """Toggle manager for failure injection scenarios - Singleton pattern"""
+    
+    _instance = None
+    _initialized = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(ToggleManager, cls).__new__(cls)
+        return cls._instance
     
     def __init__(self):
-        # Read toggles from environment with defaults
-        self.policy_force_old_version = os.getenv("POLICY_FORCE_OLD_VERSION", "false").lower() == "true"
-        self.refund_api_error_rate = float(os.getenv("REFUND_API_ERROR_RATE", "0.0"))
+        # Only initialize once
+        if not self._initialized:
+            # Read toggles from environment with defaults
+            self.policy_force_old_version = os.getenv("POLICY_FORCE_OLD_VERSION", "false").lower() == "true"
+            self.policy_drift = os.getenv("POLICY_DRIFT", "false").lower() == "true"
+            self.refund_api_error_rate = float(os.getenv("REFUND_API_ERROR_RATE", "0.0"))
+            self._initialized = True
         
     
     def get_toggle(self, name: str, default: Any = None) -> Any:
@@ -29,8 +41,15 @@ class ToggleManager:
         """Get all toggle values as a dictionary"""
         return {
             "policy_force_old_version": self.policy_force_old_version,
+            "policy_drift": self.policy_drift,
             "refund_api_error_rate": self.refund_api_error_rate
         }
+    
+    @classmethod
+    def reset_instance(cls):
+        """Reset the singleton instance (useful for testing)"""
+        cls._instance = None
+        cls._initialized = False
 
 
 # Global instance

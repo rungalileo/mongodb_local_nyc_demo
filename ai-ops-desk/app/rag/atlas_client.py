@@ -10,7 +10,7 @@ import logging
 from typing import Dict, List, Any, Optional
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
-# from galileo import log
+from galileo import log
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class AtlasClient:
         else:
             raise ValueError("No MongoDB connection string provided. Set MONGODB_URI environment variable.")
 
-    #@log(span_type="tool", name="Vector Search Policies")
+    @log(span_type="tool", name="Vector Search Policies")
     async def search_vector_policies(self, user_query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search policies using vector similarity"""
         
@@ -67,21 +67,21 @@ class AtlasClient:
         
         return results
 
-    #@log(span_type="tool", name="Get User Refund Requests")
+    @log(span_type="tool", name="Get User Refund Requests")
     async def get_user_refund_requests(self, user_id: str) -> List[Dict[str, Any]]:
         """Get refund requests for a specific user"""
         query = {"user_id": user_id}
         results = list(self.db.refund_requests.find(query))
         return results
 
-    #@log(span_type="tool", name="Get User Tickets")
+    @log(span_type="tool", name="Get User Tickets")
     async def get_user_tickets(self, user_id: str) -> List[Dict[str, Any]]:
         """Get tickets for a specific user"""
         query = {"user_id": user_id}
         results = list(self.db.tickets.find(query))
         return results
     
-    #@log(span_type="tool", name="Get User Orders")
+    @log(span_type="tool", name="Get User Orders")
     async def get_user_orders(self, user_id: str, query_text: str = None) -> List[Dict[str, Any]]:
         """Get orders for a specific user, optionally using vector search for relevance"""
         print(f"[ATLAS] Getting orders for user_id: {user_id}, query_text: {query_text}")
@@ -128,7 +128,7 @@ class AtlasClient:
             print(f"[ATLAS] Simple query results: {len(results)} orders found")
             return results
 
-    #@log(span_type="tool", name="Create Audit Record")
+    @log(span_type="tool", name="Create Audit Record")
     async def create_audit_record(self, audit_data: Dict[str, Any]) -> bool:
         """Create a new audit record"""
         result = self.db.audits.insert_one(audit_data)

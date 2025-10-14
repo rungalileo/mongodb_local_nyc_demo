@@ -40,17 +40,6 @@ async def clear_policies():
 # Policy data configuration
 POLICY_DATA: List[Policy] = [
     Policy(
-        _id="policy_eu_current_001",
-        region="EU",
-        version="v24.1",
-        effective_from=datetime(2024, 8, 1),
-        effective_until=None,
-        clauses=["refund_window", "category_electronics", "region_scope"],
-        fulltext="EU Electronics Return Policy v24.1: Customers in the European Union may return electronics within 14 days of purchase. This applies to all electronic devices excluding custom-built items. Refunds will be processed in the original currency.",
-        refund_window_days=14,
-        exclusions=["custom_built"],
-    ),
-    Policy(
         _id="policy_us_current_001",
         region="US",
         version="v24.1",
@@ -62,15 +51,26 @@ POLICY_DATA: List[Policy] = [
         exclusions=[],
     ),
     Policy(
-        _id="policy_eu_previous_001",
+        _id="policy_eu_001",
         region="EU",
         version="v23.2",
         effective_from=datetime(2020, 1, 1),
         effective_until=datetime(2024, 7, 31),
         clauses=["refund_window", "category_electronics"],
-        fulltext="EU Electronics Return Policy v23.2: Customers may return electronics within 10 days. Previous policy with shorter window.",
-        refund_window_days=10,
+        fulltext="EU Electronics Return Policy v23.2: Customers may return electronics within 30 days.",
+        refund_window_days=30,
         exclusions=["custom_built", "opened_software"],
+    ),
+    Policy(
+        _id="policy_eu_002",
+        region="EU",
+        version="v24.1",
+        effective_from=datetime(2024, 8, 1),
+        effective_until=None,
+        clauses=["refund_window", "category_electronics", "region_scope"],
+        fulltext="EU Electronics Return Policy v24.1: Customers in the European Union may return electronics within 14 days of purchase. This applies to all electronic devices excluding custom-built items. Refunds will be processed in the original currency.",
+        refund_window_days=14,
+        exclusions=["custom_built"],
     ),
 ]
 

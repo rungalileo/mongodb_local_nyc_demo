@@ -9,7 +9,7 @@ from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput, ToolReceipt
 from app.models.order import Order
 from app.toggles import ToggleManager
-# from galileo import log
+from galileo import log
 
 # Intent classification constants
 INTENT_REFUND_REQUEST = "refund_request"
@@ -36,16 +36,18 @@ class ActionAgent:
             "update_ticket": self._update_ticket,
             "escalate_ticket": self._escalate_ticket,
             "create_refund_request": self._create_refund_request,
+            "deny_refund_request": self._deny_refund_request,
             "explain_refund_state": self._explain_refund_state,
             "explain_order_state": self._explain_order_state,
         }
-        self.toggles = ToggleManager()
+        from app.toggles import get_toggle_manager
+        self.toggles = get_toggle_manager()
     
-    #@log(span_type="agent", name="Process")
+    @log(span_type="agent", name="Process")
     async def process(self, user_id: str, user_query: str, policy_output: PolicyOutput, records_output: RecordsOutput) -> ActionOutput:
         tickets = records_output.tickets
         requests = records_output.requests
-        # import pdb;pdb.set_trace()
+        
         # Determine which tools to call
         # Extract existing sentiment from relevant tickets
         existing_sentiment = None
@@ -55,13 +57,13 @@ class ActionAgent:
         latest_sentiment = await self._classify_sentiment(user_query)
         # latest_sentiment = await self._classify_sentiment_v2(user_query)
         
-        tools_to_call = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment)
+        tools_to_call, refund_determination = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment)
         tool_receipts: List[Dict[str, Any]] = []
         total_cost = 0.002  # Cost for LLM intent classification and sentiment analysis
         
         for tool_name in tools_to_call:
             if tool_name in self.available_tools:
-                receipt = await self._execute_tool(tool_name, user_query, user_id, policy_output, records_output, latest_sentiment)
+                receipt = await self._execute_tool(tool_name, user_query, user_id, policy_output, records_output, latest_sentiment, refund_determination)
                 tool_receipts.append(receipt.dict())
                 total_cost += self._calculate_tool_cost(tool_name)
         
@@ -73,10 +75,11 @@ class ActionAgent:
             cost_token_usd=total_cost,
         )
     
-    #@log(span_type="agent", name="Determine Tools")
-    async def _determine_tools(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> List[str]:
+    @log(span_type="agent", name="Determine Tools")
+    async def _determine_tools(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> tuple[List[str], str]:
         """Determine which tools to call based on context"""
         tools = []
+        refund_determination = ""
         intent = await self._classify_intent(user_query, {"policy": policy_output, "records": records_output})
         existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
         
@@ -86,8 +89,14 @@ class ActionAgent:
         
         # Handle refund requests
         if intent == INTENT_REFUND_REQUEST:
-            tools.append("create_refund_request")
-            tools.append("explain_refund_state")
+            tools_to_append = ["create_refund_request", "explain_refund_state"]
+            todays_date = "2024-08-30"
+            if self.toggles.policy_drift:
+                refund_determination = await self._determine_refund_possible(user_query, policy_output, records_output, todays_date)
+                if refund_determination.startswith("DENIED:"):
+                    tools_to_append = ["deny_refund_request", "explain_refund_state"]
+                
+            tools.extend(tools_to_append)
         
         if intent == INTENT_ORDER_INQUIRY:
             tools.append("explain_order_state")
@@ -98,10 +107,10 @@ class ActionAgent:
         else:
             tools.append("create_ticket")
 
-        return tools
+        return tools, refund_determination
     
     ## CLASSIFICATION ##
-    #@log(span_type="agent", name="Classify Intent")
+    @log(span_type="agent", name="Classify Intent")
     async def _classify_intent(self, text: str, context: Dict[str, Any]) -> str:
 
         """Classify user intent using LLM"""
@@ -130,7 +139,7 @@ class ActionAgent:
             print(f"Error in intent classification: {e}")
             return INTENT_GENERAL
     
-    #@log(span_type="agent", name="Classify Sentiment")
+    @log(span_type="agent", name="Classify Sentiment")
     async def _classify_sentiment(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
@@ -158,7 +167,7 @@ class ActionAgent:
             print(f"Error in sentiment classification: {e}")
             return SENTIMENT_NEUTRAL
 
-    #@log(span_type="agent", name="Classify Sentiment")
+    @log(span_type="agent", name="Classify Sentiment")
     async def _classify_sentiment_v2(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
@@ -196,15 +205,80 @@ class ActionAgent:
             print(f"Error in sentiment classification: {e}")
             return SENTIMENT_NEUTRAL
 
+    @log(span_type="tool", name="Determine Refund Possible")
+    async def _determine_refund_possible(self, user_query: str, policy_output: PolicyOutput, records_output: RecordsOutput, todays_date: str) -> str:
+
+        """Check if refund request is within the allowed time window using LLM"""
+        # Get the most recent order for date reference
+        policies = policy_output.policies[:1]
+        
+        prompt = f"""
+        You are a customer service agent checking if a refund request is within the allowed time window.
+        
+        TODAY'S DATE: {todays_date}
+        
+        Policy details:
+        {policies}
+
+        User query: "{user_query}"
+
+        Record Information:
+        {records_output}
+        
+        CRITICAL: You must do the math step by step:
+        1. Find the order date from the records
+        2. Calculate: Days elapsed = Today's date (30) - Order date day
+        3. Find the refund window from the ACTIVE policy (ignore expired policies)
+        4. Compare: If days elapsed > refund window, then DENIED
+        
+        Example: If order date is 2024-08-05 and today is 2024-08-30:
+        - Days elapsed = 30 - 5 = 25 days
+        - If refund window is 14 days
+        - Since 25 > 14, the refund should be DENIED
+        
+        ## RESPONSE FORMAT ##
+        Do your calculation silently, then respond with ONLY the final decision in this exact format:
+        
+        DENIED: [reason why it's denied]
+        or
+        ALLOWED: [reason why it's allowed]
+        
+        Do NOT include any explanation, reasoning, or calculation steps. Only return the final decision.
+        
+        Example: DENIED: Order placed on 2024-08-05, today is 2024-08-30, 25 days elapsed exceeds 14-day refund window
+        """
+        
+        try:
+            response = await self.llm.complete(prompt)
+            result = response.strip()
+            
+            
+            # Parse the response
+            if result.startswith("DENIED:") or result.startswith("ALLOWED:"):
+                return result
+            else:
+                # If LLM returned something unexpected, default to denying the refund for safety
+                return "Unable to determine refund eligibility - invalid response format"
+                
+        except Exception as e:
+            print(f"Error in refund determination: {e}")
+            # If there's an error, default to denying the refund for safety
+            return "Error processing refund request"
+
 
     ## TOOLS ##
-    async def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> ToolReceipt:
+    async def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> ToolReceipt:
         """Execute a specific tool"""
         tool_start = time.time()
         
         try:
             tool_func = self.available_tools[tool_name]
-            response = await tool_func(user_query, user_id, policy_output, records_output, latest_sentiment)
+            
+            # Check if the tool function is async
+            if asyncio.iscoroutinefunction(tool_func):
+                response = await tool_func(user_query, user_id, policy_output, records_output, latest_sentiment, refund_determination)
+            else:
+                response = tool_func(user_query, user_id, policy_output, records_output, latest_sentiment, refund_determination)
             
             latency = (time.time() - tool_start) * 1000
             
@@ -223,8 +297,8 @@ class ActionAgent:
                 response={"error": str(e)}
             )
 
-    #@log(span_type="tool", name="Create Refund Request")
-    def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Create Refund Request")
+    def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate creating a new refund request"""
         time.sleep(random.uniform(0.05, 0.15))
         
@@ -248,8 +322,22 @@ class ActionAgent:
             "status_message": "Refund request created"
         }
 
-    #@log(span_type="tool", name="Create Ticket")
-    def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Deny Refund Request")
+    def _deny_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
+        """Deny a refund request based on policy or other conditions"""
+        time.sleep(random.uniform(0.05, 0.15))
+        return {
+            "status": 200,
+            "refund_request_id": f"RR_DENIED_{random.randint(10000, 99999)}",
+            "user_id": user_id,
+            "refund_determination": refund_determination,
+            "policy_reference": f"Policy: {policy_output.policy_name if hasattr(policy_output, 'policy_name') else 'Default Policy'}",
+            "status_message": "Refund request denied",
+            "next_steps": "Please review our refund policy or contact customer service for further assistance"
+        }
+
+    @log(span_type="tool", name="Create Ticket")
+    def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate creating a new support ticket"""
         time.sleep(random.uniform(0.05, 0.2))
         return {
@@ -263,8 +351,8 @@ class ActionAgent:
             "status_message": "Ticket created"
         }
 
-    #@log(span_type="tool", name="Update Ticket")
-    def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Update Ticket")
+    def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate updating an existing support ticket"""
         time.sleep(random.uniform(0.05, 0.15))
         existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
@@ -277,8 +365,8 @@ class ActionAgent:
             "status_message": "Ticket updated"
         }
 
-    #@log(span_type="tool", name="Escalate Ticket")
-    def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Escalate Ticket")
+    def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate ticket escalation"""
         time.sleep(random.uniform(0.1, 0.3))
         
@@ -291,8 +379,8 @@ class ActionAgent:
             "status_message": "Ticket escalated to tier 2 support"
         }
     
-    #@log(span_type="tool", name="Explain Refund State")
-    def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Explain Refund State")
+    def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Explain the current state of refund requests"""
         time.sleep(random.uniform(0.05, 0.1))
         requests = records_output.requests
@@ -323,13 +411,13 @@ class ActionAgent:
             "status_message": "Refund state explained"
         }
     
-    #@log(span_type="llm", name="Order Status Analysis")
+    @log(span_type="llm", name="Order Status Analysis")
     async def fake_llm_hallucination(self, user_query: str, latest_order: Order):
         """Fake LLM call that hallucinates order status"""
         # Return hallucinated response
         return "delivered"
 
-    #@log(span_type="llm", name="Order Status Analysis")
+    @log(span_type="llm", name="Order Status Analysis")
     async def real_llm_analysis(self, user_query: str, latest_order: Order):
         """Real LLM call that returns actual database status"""
         # Simulate LLM processing time
@@ -337,8 +425,8 @@ class ActionAgent:
         # Return actual status from database
         return latest_order.status
         
-    #@log(span_type="tool", name="Explain Order State")
-    async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @log(span_type="tool", name="Explain Order State")
+    async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Explain the current state of user orders"""
         time.sleep(random.uniform(0.05, 0.1))
         orders = records_output.orders
@@ -409,6 +497,7 @@ class ActionAgent:
             "update_ticket": 0.001,
             "escalate_ticket": 0.003,
             "create_refund_request": 0.0015,
+            "deny_refund_request": 0.001,
             "explain_refund_state": 0.0005,
             "explain_order_state": 0.0005,
         }
@@ -423,6 +512,8 @@ class ActionAgent:
         
         if "create_refund_request" in successful_tools:
             return "refund_request_created"
+        elif "deny_refund_request" in successful_tools:
+            return "refund_request_denied"
         elif "escalate_ticket" in successful_tools:
             return "ticket_escalated"
         elif "update_ticket" in successful_tools:

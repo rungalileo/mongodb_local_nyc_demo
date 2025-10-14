@@ -8,8 +8,8 @@ import os
 from typing import List, Dict, Tuple, Any
 import numpy as np
 from dotenv import load_dotenv
-import openai
-# from galileo.openai import openai
+# import openai
+from galileo.openai import openai
 
 # Load environment variables from .env file
 load_dotenv()

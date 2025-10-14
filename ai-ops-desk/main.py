@@ -47,15 +47,20 @@ SCENARIOS = {
     }
 }
     
-async def run_scenario(scenario: str, toggles_provided: list[str]) -> Dict[str, Any]:
+async def run_scenario(scenario: str, toggles_provided: list[str], policy_drift: bool = False) -> Dict[str, Any]:
     """Run a specific test scenario"""
-    # import pdb;pdb.set_trace()
-    # Initialize ToggleManager after parsing arguments
+    
+    # Reset and initialize ToggleManager singleton with correct values
+    ToggleManager.reset_instance()
     toggles = ToggleManager()
     
     # Configure toggles based on scenario
     if "drift" in toggles_provided:
         toggles.policy_force_old_version = True
+    
+    # Configure policy drift toggle
+    if policy_drift:
+        toggles.policy_drift = True
     
     # Create the agent graph
     graph = await create_ops_desk_graph()
@@ -97,6 +102,11 @@ async def main():
         nargs="+",
         help="Toggles to enable"
     )
+    parser.add_argument(
+        "--policy-drift",
+        action="store_true",
+        help="Enable policy drift mode (uses expired policies)"
+    )
     args = parser.parse_args()
     
     
@@ -108,7 +118,7 @@ async def main():
         scenario_names = list(SCENARIOS.keys())
         scenario = scenario_names[args.index]
         
-        result = await run_scenario(scenario, toggles_provided)
+        result = await run_scenario(scenario, toggles_provided, args.policy_drift)
         
         # Print results
         print(f"\n{'='*60}")

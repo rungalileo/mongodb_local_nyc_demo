@@ -11,7 +11,7 @@ from app.models.refund_request import RefundRequest
 from app.models.ticket import Ticket
 from app.models.records_output import RecordsOutput
 from app.toggles import ToggleManager
-# from galileo import log
+from galileo import log
 # Constants for data limits
 NUM_REQUESTS_INCLUDED = 3
 NUM_TICKETS_INCLUDED = 5
@@ -24,7 +24,7 @@ class RecordsAgent:
     def __init__(self):
         self.toggles = ToggleManager()
     
-    #@log(span_type="agent", name="Records Agent Process")
+    @log(span_type="agent", name="Records Agent Process")
     async def process(self, user_query: str, user_id: str) -> RecordsOutput:
         
         # Goal of this function is to get latest relevant claims and tickets
