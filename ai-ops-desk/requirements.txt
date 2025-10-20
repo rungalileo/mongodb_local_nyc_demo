@@ -9,3 +9,5 @@ httpx>=0.25.0
 uvloop>=0.17.0
 typing-extensions>=4.5.0
 galileo[openai]>=1.17.1
+colorama>=0.4.6
+requests>=2.31.0

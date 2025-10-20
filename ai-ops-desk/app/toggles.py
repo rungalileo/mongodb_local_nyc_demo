@@ -12,7 +12,6 @@ class ToggleManager:
     """Toggle manager for failure injection scenarios"""
     
     def __init__(self):
-        # Read toggles from environment with defaults
         self.policy_force_old_version = os.getenv("POLICY_FORCE_OLD_VERSION", "false").lower() == "true"
         self.refund_api_error_rate = float(os.getenv("REFUND_API_ERROR_RATE", "0.0"))
         

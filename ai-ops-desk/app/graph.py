@@ -8,10 +8,11 @@ Policy → Records → Action → Audit → END
 import time
 from typing import Dict, Any, List, Optional
 from enum import Enum
+from colorama import Fore, Style, init
 
 from langgraph.graph import StateGraph, END
 from typing_extensions import Annotated
-# from galileo import log
+from galileo import log
 
 from app.agents.policy import PolicyAgent
 from app.agents.records import RecordsAgent
@@ -21,6 +22,9 @@ from app.models.policy_output import PolicyOutput
 from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput
 from app.models.audit_output import AuditOutput
+
+# Initialize colorama
+init(autoreset=True)
 
 
 class AgentState(dict):
@@ -37,11 +41,10 @@ class AgentState(dict):
     action_output: Optional[ActionOutput] = None
     audit_output: Optional[AuditOutput] = None
     
-    # Control flow (minimal)
+    # Control flow
     status: str = "running"
     error: Optional[str] = None
     
-    # Timestamps for handoff latency
     agent_start_times: Dict[str, float] = None
     agent_end_times: Dict[str, float] = None
     
@@ -67,100 +70,95 @@ def record_agent_timing(state: AgentState, agent_name: str, start: bool = True):
         state["agent_end_times"][agent_name] = current_time
 
 
-#@log(span_type="workflow", name="Policy Node")
+@log(span_type="workflow", name="Policy Agent")
 async def policy_node(state: AgentState) -> AgentState:
     """Policy agent node"""
-    print(f"🔄 [GRAPH] Entering policy node for user {state.get('user_id', 'unknown')}")
+    print(f"{Fore.CYAN}→ Policy Agent: Starting for user {state.get('user_id', 'unknown')}{Style.RESET_ALL}")
     record_agent_timing(state, "policy", start=True)
-    
+
     try:
         agent = PolicyAgent()
         # import pdb;pdb.set_trace()
         order = None
         if state.get("records_output") and state.get("records_output").orders:
             order = state.get("records_output").orders[0]
-        result = await agent.process(user_query=state["user_query"], user_id=state["user_id"], order = order)        
+        result = await agent.process(user_query=state["user_query"], user_id=state["user_id"], order = order)
         state["policy_output"] = result
-        print(f"✅ [GRAPH] Exiting policy node - success")
+        print(f"{Fore.CYAN}✓ Policy Agent: Complete{Style.RESET_ALL}")
     except Exception as e:
-        print(f"❌ [GRAPH] Exiting policy node - error: {str(e)}")
-        print("Exception: Agent failed at this state: policy")
-        state["error"] = f"Policy agent failed: {str(e)}"
+        print(f"✗ Policy Agent failed: {str(e)}")
+        state["error"] = f"Policy Agent failed: {str(e)}"
         state["status"] = "error"
     
     record_agent_timing(state, "policy", start=False)
     return state
 
 
-#@log(span_type="workflow", name="Records Node")
+@log(span_type="workflow", name="Agent Trace", params={"AAAAAAAA":"b"})
 async def records_node(state: AgentState) -> AgentState:
-    """Records agent node"""
-    print(f"🔄 [GRAPH] Entering records node for user {state.get('user_id', 'unknown')}")
+    print(f"{Fore.GREEN}→ Records Agent: Starting{Style.RESET_ALL}")
     record_agent_timing(state, "records", start=True)
-    
+
     try:
         agent = RecordsAgent()
         result = await agent.process(user_query=state["user_query"], user_id=state["user_id"])
-        
+
         state["records_output"] = result
-        print(f"✅ [GRAPH] Exiting records node - success")
+        print(f"{Fore.GREEN}✓ Records Agent: Complete{Style.RESET_ALL}")
         
     except Exception as e:
-        print(f"❌ [GRAPH] Exiting records node - error: {str(e)}")
-        print("Exception: Agent failed at this state: records")
-        state["error"] = f"Records agent failed: {str(e)}"
+        print(f"✗ Records Agent failed: {str(e)}")
+        state["error"] = f"Records Agent failed: {str(e)}"
         state["status"] = "error"
     
     record_agent_timing(state, "records", start=False)
     return state
 
 
-#@log(span_type="workflow", name="Action Node")
+@log(span_type="workflow", name="Action Agent")
 async def action_node(state: AgentState) -> AgentState:
     """Action agent node"""
-    print(f"🔄 [GRAPH] Entering action node for user {state.get('user_id', 'unknown')}")
+    print(f"{Fore.YELLOW}→ Action Agent: Starting{Style.RESET_ALL}")
     record_agent_timing(state, "action", start=True)
-    
+
     try:
         agent = ActionAgent()
         result = await agent.process(state["user_id"], state["user_query"], state.get("policy_output"), state.get("records_output"))
-        
+
         state["action_output"] = result
-        print(f"✅ [GRAPH] Exiting action node - success")
+        print(f"{Fore.YELLOW}✓ Action Agent: Complete{Style.RESET_ALL}")
         
     except Exception as e:
-        print(f"❌ [GRAPH] Exiting action node - error: {str(e)}")
-        print("Exception: Agent failed at this state: action")
-        state["error"] = f"Action agent failed: {str(e)}"
+        print(f"✗ Action Agent failed: {str(e)}")
+        state["error"] = f"Action Agent failed: {str(e)}"
         state["status"] = "error"
     
     record_agent_timing(state, "action", start=False)
     return state
 
 
-#@log(span_type="workflow", name="Audit Node")
+@log(span_type="workflow", name="Audit Agent")
 async def audit_node(state: AgentState) -> AgentState:
     """Audit agent node"""
-    print(f"🔄 [GRAPH] Entering audit node for user {state.get('user_id', 'unknown')}")
+    print(f"{Fore.BLUE}→ Audit Agent: Starting{Style.RESET_ALL}")
     record_agent_timing(state, "audit", start=True)
-    
+
     try:
         agent = AuditAgent()
         result = await agent.process(user_query=state["user_query"], user_id=state["user_id"], policy_output=state.get("policy_output"), records_output=state.get("records_output"), action_output=state.get("action_output"))
-        
+
         state["audit_output"] = result
         state["status"] = "completed"
-        
+
         # Extract final resolution from action output
         if state.get("action_output"):
             state["resolution"] = state["action_output"].resolution
-        
-        print(f"✅ [GRAPH] Exiting audit node - success (workflow completed)")
+
+        print(f"{Fore.BLUE}✓ Audit Agent: Complete{Style.RESET_ALL}")
         
     except Exception as e:
-        print(f"❌ [GRAPH] Exiting audit node - error: {str(e)}")
-        print("Exception: Agent failed at this state: audit")
-        state["error"] = f"Audit agent failed: {str(e)}"
+        print(f"✗ Audit Agent failed: {str(e)}")
+        state["error"] = f"Audit Agent failed: {str(e)}"
         state["status"] = "error"
     
     record_agent_timing(state, "audit", start=False)

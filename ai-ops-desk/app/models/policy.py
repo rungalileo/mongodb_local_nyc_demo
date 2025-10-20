@@ -15,5 +15,3 @@ class Policy:
     refund_window_days: int
     exclusions: List[str]
     effective_until: Optional[datetime] = None
-
-

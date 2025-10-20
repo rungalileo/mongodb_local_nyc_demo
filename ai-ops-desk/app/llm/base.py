@@ -8,8 +8,8 @@ import os
 from typing import List, Dict, Tuple, Any
 import numpy as np
 from dotenv import load_dotenv
-import openai
-# from galileo.openai import openai
+# import openai
+from galileo.openai import openai
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,7 +42,7 @@ class OpenAIProvider:
             return np.array(embeddings, dtype=np.float32)
             
         except Exception as e:
-            print(f"[OPENAI] Embedding failed: {e}")
+            print(f"  OpenAI embedding failed: {e}")
             # Fallback to random embeddings
             return np.random.rand(len(texts), 1536).astype(np.float32)
     
@@ -61,7 +61,7 @@ class OpenAIProvider:
             return response.choices[0].message.content
             
         except Exception as e:
-            print(f"OopenAI Completion failed: {e}")
+            print(f"  OpenAI completion failed: {e}")
             # Fallback response
             return f"Unable to generate response due to API error: {str(e)}"
     
