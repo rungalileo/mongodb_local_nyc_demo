@@ -22,10 +22,13 @@ class ToggleManager:
     def __init__(self):
         # Only initialize once
         if not self._initialized:
-            # Read toggles from environment with defaults
+            # this one is unused rn
             self.policy_force_old_version = os.getenv("POLICY_FORCE_OLD_VERSION", "false").lower() == "true"
+            # Used
             self.policy_drift = os.getenv("POLICY_DRIFT", "false").lower() == "true"
             self.refund_api_error_rate = float(os.getenv("REFUND_API_ERROR_RATE", "0.0"))
+            self.llm_hallucination = os.getenv("LLM_HALLUCINATION", "false").lower() == "true"
+            
             self._initialized = True
         
     
@@ -42,7 +45,8 @@ class ToggleManager:
         return {
             "policy_force_old_version": self.policy_force_old_version,
             "policy_drift": self.policy_drift,
-            "refund_api_error_rate": self.refund_api_error_rate
+            "refund_api_error_rate": self.refund_api_error_rate,
+            "llm_hallucination": self.llm_hallucination
         }
     
     @classmethod

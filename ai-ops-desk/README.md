@@ -1,4 +1,6 @@
-# AI Operations Desk - Multi-Agent Demo
+# AI Customer Service Operations Desk - Multi-Agent Demo
+4 Agent System who's purpose is to respond to customer enquiries, and carry out necessary operations. 
+
 
 A sophisticated multi-agent AI system for handling customer service operations including refund requests, support tickets, and policy management.
 
@@ -6,14 +8,47 @@ A sophisticated multi-agent AI system for handling customer service operations i
 <img src="image.png" alt="Multi-Agent Flow" width="600"/>
 
 
+
+## Scenario walk through
+
+The demo includes 7 pre-configured scenarios that test different customer service scenarios:
+
+| Index | Scenario Name | User ID | Description |
+|-------|---------------|---------|-------------|
+| 0 | `refund_bluetooth_earbuds` | user_001 | Customer requests refund for bluetooth electronics, unsatisfied with product |
+| 1 | `refund_dryer` | user_002 | Angry customer with strongly negative sentiment requesting tablet refund |
+| 2 | `refund_gaming_mouse` | user_003 | Customer reports broken gaming mouse, defective product case |
+| 3 | `refund_air_purifier` | user_004 | Change of mind refund request for air purifier |
+| 4 | `refund_coffee_maker` | user_005 | Product malfunction - coffee maker won't heat water |
+| 5 | `refund_speakers` | user_006 | Customer dissatisfied with speaker system sound quality |
+| 6 | `enquire_status_of_order` | user_007 | Customer inquiry about delivery status (tests LLM hallucination toggle) |
+
+### Running Scenarios
+
+```bash
+# Run a specific scenario by index
+python main.py --index 0
+
+# Run multiple scenarios
+./run_scenarios.sh 0 5
+
+# Run with toggles enabled
+python main.py --index 1 --policy-drift
+python main.py --index 6 --llm
+
+# Combine multiple flags
+./run_scenarios.sh 0 0 --policy-drift --llm
+```
+
+
 ## Overview
 
 This demo showcases:
 - **Galileo** as an observability and evaluation tool
-- **MongoDB Atlas** as a RAG store with Vector Search for policy retrieval
-- **OpenAI** for LLM operations and embeddings
+- **Rag Store** MongoDB Atlas as a RAG store with Vector Search for policy retrieval
+- **LLM Use** OpenAI models for LLM operations and embeddings
 - **LangGraph** orchestration with 4 specialized agents
-- **Other goodies:** Sturctured data models for compliance-y stuff, sentiment analysis and intent classification, the usual
+- **Other goodies:** Sturctured data models for compliance, sentiment analysis and intent classification
 
 ## Architecture
 
@@ -71,16 +106,24 @@ This demo showcases:
 
 5. **Run scenarios**
    ```bash
-   python main.py --scenario refund_bluetooth_earbuds
-
-   # OR to run the scenario by its number
-
-   python main.py --index 0->6
+   # Run a specific scenario by index (0-6)
+   python main.py --index 0
+   
+   # Or run a range of scenarios
+   ./run_scenarios.sh 0 5
    ```
-   We also have a toggle manager to activate different failure states, but more on that later
+   
+   See the [Scenario walk through](#scenario-walk-through) section above for detailed scenario information and toggle usage.
 
 ### Available Toggles
-- **drift**: Simulates policy drift by forcing use of expired policies
+
+The system includes several toggles for testing different failure scenarios:
+
+- **`--policy-drift`**: Enables policy drift mode where refund determination uses expired policies and only the first policy from the list. When disabled, uses all active policies for refund eligibility checks.
+- **`--llm`**: Enables LLM hallucination simulation (currently only active for user_007). When enabled, the system uses `fake_llm_hallucination()` instead of real LLM analysis, simulating incorrect status predictions.
+- **`--toggles drift`**: Legacy toggle for policy drift (use `--policy-drift` instead)
+
+All toggles can be set via command-line flags or environment variables (e.g., `POLICY_DRIFT=true`, `LLM_HALLUCINATION=true`).
 
 ## Troubleshooting
 

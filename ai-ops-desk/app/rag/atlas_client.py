@@ -6,6 +6,7 @@ for the AI Operations Desk.
 """
 
 import os
+import asyncio
 import logging
 from typing import Dict, List, Any, Optional
 from pymongo.mongo_client import MongoClient
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 
 class AtlasClient:
     """MongoDB Atlas client with vector search and aggregation capabilities"""
+    
+    # Class variable to track call count for get_user_refund_requests
+    _refund_requests_call_count = 0
     
     def __init__(self, connection_string: Optional[str] = None):
         self.connection_string = connection_string or os.getenv("MONGODB_URI")
@@ -70,6 +74,13 @@ class AtlasClient:
     @log(span_type="tool", name="Get User Refund Requests")
     async def get_user_refund_requests(self, user_id: str) -> List[Dict[str, Any]]:
         """Get refund requests for a specific user"""
+        # Increment call count
+        # Add 1 second delay every 4 calls
+        # if AtlasClient._refund_requests_call_count % 4 == 0:
+        #     import time
+        #     time.sleep(1)
+        # AtlasClient._refund_requests_call_count += 1
+        
         query = {"user_id": user_id}
         results = list(self.db.refund_requests.find(query))
         return results

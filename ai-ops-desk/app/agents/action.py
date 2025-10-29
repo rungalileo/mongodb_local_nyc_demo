@@ -3,6 +3,7 @@ import asyncio
 import time
 import random
 from typing import Dict, Any, List
+from datetime import datetime
 from pydantic import BaseModel
 from app.models.policy_output import PolicyOutput
 from app.models.records_output import RecordsOutput
@@ -90,11 +91,34 @@ class ActionAgent:
         # Handle refund requests
         if intent == INTENT_REFUND_REQUEST:
             tools_to_append = ["create_refund_request", "explain_refund_state"]
+            
+            # Calculate todays_date as max of "2024-08-30" and the latest order date
+            base_date = datetime(2024, 8, 30).date()
             todays_date = "2024-08-30"
-            if self.toggles.policy_drift:
-                refund_determination = await self._determine_refund_possible(user_query, policy_output, records_output, todays_date)
-                if refund_determination.startswith("DENIED:"):
-                    tools_to_append = ["deny_refund_request", "explain_refund_state"]
+            
+            if records_output.orders:
+                latest_order = records_output.orders[0]
+                order_date = latest_order.order_date if hasattr(latest_order, 'order_date') else latest_order.get('order_date') if isinstance(latest_order, dict) else None
+                
+                if order_date:
+                    # Ensure order_date is a datetime object and extract date
+                    if isinstance(order_date, str):
+                        try:
+                            order_date = datetime.fromisoformat(order_date.replace('Z', '+00:00'))
+                        except (ValueError, AttributeError):
+                            order_date = None
+                    
+                    if order_date and isinstance(order_date, datetime):
+                        # Extract date part (handles both timezone-aware and naive datetimes)
+                        order_date_only = order_date.date()
+                        
+                        # Use the maximum (later date)
+                        if order_date_only > base_date:
+                            todays_date = order_date_only.strftime("%Y-%m-%d")
+            
+            refund_determination = await self._determine_refund_possible(user_query, policy_output, records_output, todays_date)
+            if refund_determination.startswith("DENIED:"):
+                tools_to_append = ["deny_refund_request", "explain_refund_state"]
                 
             tools.extend(tools_to_append)
         
@@ -210,7 +234,10 @@ class ActionAgent:
 
         """Check if refund request is within the allowed time window using LLM"""
         # Get the most recent order for date reference
-        policies = policy_output.policies[:1]
+        if self.toggles.policy_drift:
+            policies = policy_output.policies[:1]
+        else:
+            policies = policy_output.policies
         
         prompt = f"""
         You are a customer service agent checking if a refund request is within the allowed time window.
@@ -227,7 +254,7 @@ class ActionAgent:
         
         CRITICAL: You must do the math step by step:
         1. Find the order date from the records
-        2. Calculate: Days elapsed = Today's date (30) - Order date day
+        2. Calculate: Days elapsed = Today's date (30) - Order date day, but take month/year into account
         3. Find the refund window from the ACTIVE policy (ignore expired policies)
         4. Compare: If days elapsed > refund window, then DENIED
         
@@ -300,7 +327,7 @@ class ActionAgent:
     @log(span_type="tool", name="Create Refund Request")
     def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate creating a new refund request"""
-        time.sleep(random.uniform(0.05, 0.15))
+        # time.sleep(random.uniform(0.05, 0.15))
         
         # Extract amount and currency from existing requests or use defaults
         amount = 0.0
@@ -325,7 +352,7 @@ class ActionAgent:
     @log(span_type="tool", name="Deny Refund Request")
     def _deny_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Deny a refund request based on policy or other conditions"""
-        time.sleep(random.uniform(0.05, 0.15))
+        # time.sleep(random.uniform(0.05, 0.15))
         return {
             "status": 200,
             "refund_request_id": f"RR_DENIED_{random.randint(10000, 99999)}",
@@ -339,7 +366,7 @@ class ActionAgent:
     @log(span_type="tool", name="Create Ticket")
     def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate creating a new support ticket"""
-        time.sleep(random.uniform(0.05, 0.2))
+        # time.sleep(random.uniform(0.05, 0.2))
         return {
             "status": 201,
             "ticket_id": f"TKT_{random.randint(10000, 99999)}",
@@ -354,7 +381,7 @@ class ActionAgent:
     @log(span_type="tool", name="Update Ticket")
     def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate updating an existing support ticket"""
-        time.sleep(random.uniform(0.05, 0.15))
+        # time.sleep(random.uniform(0.05, 0.15))
         existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
         ticket_id = existing_ticket._id if existing_ticket and hasattr(existing_ticket, '_id') else (existing_ticket.get('_id') if existing_ticket else f"TKT_{random.randint(10000, 99999)}")
         return {
@@ -368,7 +395,7 @@ class ActionAgent:
     @log(span_type="tool", name="Escalate Ticket")
     def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Simulate ticket escalation"""
-        time.sleep(random.uniform(0.1, 0.3))
+        # time.sleep(random.uniform(0.1, 0.3))
         
         return {
             "status": 200,
@@ -382,7 +409,7 @@ class ActionAgent:
     @log(span_type="tool", name="Explain Refund State")
     def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Explain the current state of refund requests"""
-        time.sleep(random.uniform(0.05, 0.1))
+        # time.sleep(random.uniform(0.05, 0.1))
         requests = records_output.requests
         
         if not requests:
@@ -428,7 +455,7 @@ class ActionAgent:
     @log(span_type="tool", name="Explain Order State")
     async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str, refund_determination: str = "") -> Dict[str, Any]:
         """Explain the current state of user orders"""
-        time.sleep(random.uniform(0.05, 0.1))
+        # time.sleep(random.uniform(0.05, 0.1))
         orders = records_output.orders
         
         if not orders:
@@ -439,8 +466,8 @@ class ActionAgent:
             product_name = latest_order.product_name if hasattr(latest_order, 'product_name') else latest_order.get("product_name", "unknown product")
             order_date = latest_order.order_date if hasattr(latest_order, 'order_date') else latest_order.get("order_date", "unknown date")
             
-            # Special case for user_007 - fake LLM hallucination
-            if user_id == "user_007":
+            # Use toggle to determine if LLM hallucination should be enabled
+            if user_id == "user_007" and self.toggles.llm_hallucination:
                 # Call the fake LLM function
                 hallucinated_status = await self.fake_llm_hallucination(user_query, latest_order)
                 

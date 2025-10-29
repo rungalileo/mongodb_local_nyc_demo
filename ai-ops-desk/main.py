@@ -47,7 +47,7 @@ SCENARIOS = {
     }
 }
     
-async def run_scenario(scenario: str, toggles_provided: list[str], policy_drift: bool = False) -> Dict[str, Any]:
+async def run_scenario(scenario: str, toggles_provided: list[str], policy_drift: bool = False, llm_hallucination: bool = False) -> Dict[str, Any]:
     """Run a specific test scenario"""
     
     # Reset and initialize ToggleManager singleton with correct values
@@ -61,6 +61,10 @@ async def run_scenario(scenario: str, toggles_provided: list[str], policy_drift:
     # Configure policy drift toggle
     if policy_drift:
         toggles.policy_drift = True
+    
+    # Configure LLM hallucination toggle
+    if llm_hallucination:
+        toggles.llm_hallucination = True
     
     # Create the agent graph
     graph = await create_ops_desk_graph()
@@ -107,6 +111,11 @@ async def main():
         action="store_true",
         help="Enable policy drift mode (uses expired policies)"
     )
+    parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="Enable LLM hallucination mode (simulates LLM making incorrect status predictions)"
+    )
     args = parser.parse_args()
     
     
@@ -118,7 +127,7 @@ async def main():
         scenario_names = list(SCENARIOS.keys())
         scenario = scenario_names[args.index]
         
-        result = await run_scenario(scenario, toggles_provided, args.policy_drift)
+        result = await run_scenario(scenario, toggles_provided, args.policy_drift, args.llm)
         
         # Print results
         print(f"\n{'='*60}")
