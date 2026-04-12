@@ -1,478 +1,158 @@
-from re import U
-import asyncio
-import time
-import random
-from typing import Dict, Any, List
-from pydantic import BaseModel
+from __future__ import annotations
+
+import json
+from typing import Any
+
 from colorama import Fore, Style
-from app.models.policy_output import PolicyOutput
-from app.models.records_output import RecordsOutput
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import ToolNode
+
 from app.models.action_output import ActionOutput, ToolReceipt
-from app.models.order import Order
-from app.toggles import ToggleManager
-from galileo import log
+from app.tools.crm_tools import CRM_TOOLS
 
-# Intent classification constants
-INTENT_REFUND_REQUEST = "refund_request"
-INTENT_ORDER_INQUIRY = "order_inquiry"
-INTENT_GENERAL = "general"
-VALID_INTENTS = [INTENT_REFUND_REQUEST, INTENT_ORDER_INQUIRY, INTENT_GENERAL]
-
-# Sentiment classification constants
-SENTIMENT_NEGATIVE = "negative"
-SENTIMENT_POSITIVE = "positive"
-SENTIMENT_NEUTRAL = "neutral"
-VALID_SENTIMENTS = [SENTIMENT_NEGATIVE, SENTIMENT_POSITIVE, SENTIMENT_NEUTRAL]
+MAX_TOOL_ROUNDS = 3
 
 
+async def action_node(state: dict) -> dict:
+    """Action Agent — LLM decides which CRM tools to call and executes them.
 
-class ActionAgent:
-    """A5: Action Agent - External API calls and tool execution"""
-    
-    def __init__(self):
-        from app.llm.client import openai_client
-        self.llm = openai_client.client
-        self.available_tools = {
-            "create_ticket": self._create_ticket,
-            "update_ticket": self._update_ticket,
-            "escalate_ticket": self._escalate_ticket,
-            "create_refund_request": self._create_refund_request,
-            "explain_refund_state": self._explain_refund_state,
-            "explain_order_state": self._explain_order_state,
-        }
-        self.toggles = ToggleManager()
-    
-    @log(span_type="agent", name="Process")
-    async def process(self, 
-                    user_id: str, 
-                    user_query: str, 
-                    policy_output: PolicyOutput, 
-                    records_output: RecordsOutput) -> ActionOutput:
+    Runs the full tool-calling loop inside a single graph node so that
+    the SDOT instrumentor emits exactly one ``invoke_agent`` span for the
+    Action Agent (matching the original CRM app's telemetry shape).
+    """
+    print(f"{Fore.YELLOW}-> Action Agent: Starting{Style.RESET_ALL}")
+    records = state.get("records", {})
+    policies = state.get("policies", [])
 
-        tickets = records_output.tickets
-        requests = records_output.requests
-        # import pdb;pdb.set_trace()
-        # Determine which tools to call
-        # Extract existing sentiment from relevant tickets
-        existing_sentiment = None
+    # Build context summary for the LLM
+    context_parts = []
+    requests = records.get("requests", [])
+    tickets = records.get("tickets", [])
+    orders = records.get("orders", [])
 
-        if tickets:
-            latest_ticket = tickets[0]  # Assuming sorted by date
-            existing_sentiment = latest_ticket.customer_sentiment if hasattr(latest_ticket, 'customer_sentiment') else latest_ticket.get('customer_sentiment')
-
-        print(f"  {Fore.YELLOW}Classifying sentiment via LLM...{Style.RESET_ALL}")
-        latest_sentiment = await self._classify_sentiment(user_query)
-        # latest_sentiment = await self._classify_sentiment_v2(user_query)
-        print(f"  {Fore.YELLOW}Detected sentiment: {latest_sentiment}{Style.RESET_ALL}")
-
-        print(f"  {Fore.YELLOW}Classifying intent via LLM...{Style.RESET_ALL}")
-        tools_to_call = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment)
-        print(f"  {Fore.YELLOW}Tools to execute: {', '.join(tools_to_call)}{Style.RESET_ALL}")
-
-        tool_receipts: List[Dict[str, Any]] = []
-        total_cost = 0.002  # Cost for LLM intent classification and sentiment analysis
-
-        for tool_name in tools_to_call:
-            if tool_name in self.available_tools:
-                print(f"  {Fore.YELLOW}Executing tool: {tool_name}...{Style.RESET_ALL}")
-                receipt = await self._execute_tool(tool_name, user_query, user_id, policy_output, records_output, latest_sentiment)
-                status_icon = "✓" if 200 <= receipt.status < 300 else "✗"
-                print(f"  {Fore.YELLOW}{status_icon} Tool {tool_name}: {receipt.status} ({receipt.latency_ms:.0f}ms){Style.RESET_ALL}")
-                tool_receipts.append(receipt.dict())
-                total_cost += self._calculate_tool_cost(tool_name)
-
-        resolution = self._determine_resolution([ToolReceipt(**r) for r in tool_receipts], records_output)
-        print(f"  {Fore.YELLOW}Final resolution: {resolution}{Style.RESET_ALL}")
-        
-        return ActionOutput(
-            resolution=resolution,
-            tool_receipts=[ToolReceipt(**r) for r in tool_receipts],
-            cost_token_usd=total_cost,
+    if requests:
+        context_parts.append(
+            f"Existing refund requests ({len(requests)}):\n"
+            + json.dumps(requests[:2], indent=2, default=str)
         )
-    
-    @log(span_type="agent", name="Determine Tools")
-    async def _determine_tools(self, 
-                            user_query: str, 
-                            user_id: str, 
-                            policy_output: PolicyOutput, 
-                            records_output: RecordsOutput, 
-                            latest_sentiment: str) -> List[str]:
-        """Determine which tools to call based on context"""
-        tools = []
-        intent = await self._classify_intent(
-            user_query, 
-            {"policy": policy_output, "records": records_output}
+    if tickets:
+        context_parts.append(
+            f"Existing support tickets ({len(tickets)}):\n"
+            + json.dumps(tickets[:2], indent=2, default=str)
         )
-        existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
-        
-        # Handle ticket escalation for extremely negative sentiment
-        if latest_sentiment == SENTIMENT_NEGATIVE:
-            tools.append("escalate_ticket")
-        
-        # Handle refund requests
-        if intent == INTENT_REFUND_REQUEST:
-            tools.append("create_refund_request")
-            tools.append("explain_refund_state")
-        
-        if intent == INTENT_ORDER_INQUIRY:
-            tools.append("explain_order_state")
+    if orders:
+        context_parts.append(
+            f"Customer orders ({len(orders)}):\n"
+            + json.dumps(orders[:2], indent=2, default=str)
+        )
+    if policies:
+        policy_summary = [
+            {"version": p.get("version"), "region": p.get("region"),
+             "refund_window_days": p.get("refund_window_days"),
+             "effective_until": str(p.get("effective_until", "current"))}
+            for p in policies[:3]
+        ]
+        context_parts.append(f"Applicable policies:\n{json.dumps(policy_summary, indent=2)}")
 
-        # Create or update ticket for any request
-        if existing_ticket:
-            tools.append("update_ticket")
-        else:
-            tools.append("create_ticket")
+    context_block = "\n\n".join(context_parts) if context_parts else "No prior records found."
 
-        return tools
-    
-    @log(span_type="agent", name="Classify Intent")
-    async def _classify_intent(self, text: str, context: Dict[str, Any]) -> str:
+    system_prompt = f"""You are the Action Agent in a CRM Operations Desk.
+Your job is to decide what actions to take for a customer request and execute
+the appropriate tools.
 
-        """Classify user intent using LLM"""
-        prompt = f"""
-        Classify the following customer message into one of these intents:
-        - {INTENT_REFUND_REQUEST}: Customer wants a refund, return, or money back
-        - {INTENT_ORDER_INQUIRY}: Customer asking about order status, delivery, shipping
-        - {INTENT_GENERAL}: Any other customer service request
+Customer ID: {state['user_id']}
 
-        If a return request already exists for this consumer for the product asked about, classify as {INTENT_ORDER_INQUIRY}.
-        We are passing to you a list of relevant refund requests for this consumer.
+== Context from Records & Policy agents ==
+{context_block}
 
-        Customer message: "{text}"
-        Existing context: "{context}"
-        
-        Respond with only the intent name ({INTENT_REFUND_REQUEST}, {INTENT_ORDER_INQUIRY}, or {INTENT_GENERAL}):
-        """
-        
-        try:
-            response = await self.llm.complete(prompt)
-            intent = response.strip().lower()
-            
-            # Validate response
-            return intent if intent in VALID_INTENTS else INTENT_GENERAL
-        except Exception as e:
-            print(f"  Intent classification failed: {e}")
-            return INTENT_GENERAL
-    
-    @log(span_type="agent", name="Classify Sentiment")
-    async def _classify_sentiment(self, text: str) -> str:
-        """Classify customer sentiment using LLM based on current text and existing sentiment"""
-        
-        prompt = f"""
-        Analyze the customer's sentiment based on their current message.
-        Current customer message: "{text}"
-        
-        Classify the overall sentiment as one of:
-        - {SENTIMENT_NEGATIVE}: Customer is angry, frustrated, upset, or expressing dissatisfaction
-        - {SENTIMENT_POSITIVE}: Customer is happy, satisfied, grateful, or expressing appreciation
-        - {SENTIMENT_NEUTRAL}: Customer is calm, matter-of-fact, or neither positive nor negative
-        
-        Consider both the current message and any escalation in sentiment from previous interactions.
-        
-        Respond with only the sentiment: {SENTIMENT_NEGATIVE}, {SENTIMENT_POSITIVE}, or {SENTIMENT_NEUTRAL}
-        """
-        
-        try:
-            response = await self.llm.complete(prompt)
-            sentiment = response.strip().lower()
-            
-            # Validate response
-            return sentiment if sentiment in VALID_SENTIMENTS else SENTIMENT_NEUTRAL
-        except Exception as e:
-            print(f"  Sentiment classification failed: {e}")
-            return SENTIMENT_NEUTRAL
+== Instructions ==
+1. Analyse the customer's sentiment (negative/neutral/positive).
+2. If the customer is angry or very negative, escalate the ticket.
+3. If the customer wants a refund or return, create a refund request AND
+   explain the refund state.
+4. If the customer is asking about an order, explain the order state.
+5. Always create or update a support ticket.
+6. Pass accurate data to the tools — use the customer's actual order amounts,
+   ticket IDs, and refund request data from the context above.
+7. Call ALL relevant tools in a SINGLE response. Do NOT repeat tool calls.
+8. Once you receive tool results, summarise the outcome for the customer.
+   Do NOT call the same tool again."""
 
-    @log(span_type="agent", name="Classify Sentiment")
-    async def _classify_sentiment_v2(self, text: str) -> str:
-        """Classify customer sentiment using LLM based on current text and existing sentiment"""
-        
-        prompt = f"""
-        SYSTEM:
-        You are a strict classifier for customer-service escalation SEVERITY, not generic sentiment.
-        Follow the decision procedure exactly.
+    user_msg = state["user_query"]
 
-        DECISION PROCEDURE (apply in order):
-        1) If the message contains any of: profanity, personal insults, slurs, threats, ALL-CAPS SHOUTING (≥50% of words uppercased), or repeated exclamation (e.g., "!!!"), classify as NEGATIVE.
-        2) Else if the message expresses clear praise, gratitude, or happiness, classify as POSITIVE.
-        3) Otherwise classify as NEUTRAL, including calm complaints, dissatisfaction, returns, or refund requests.
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+    llm_with_tools = llm.bind_tools(CRM_TOOLS)
+    tool_node = ToolNode(CRM_TOOLS)
 
-        OUTPUT:
-        Return ONE token only: negative | positive | neutral (lowercase).
+    messages: list = [SystemMessage(content=system_prompt), HumanMessage(content=user_msg)]
 
-        EXAMPLES:
-        - "THIS SUCKS YOU SUCK EVERYONE SUCKS HOW DARE YOU" -> negative
-        - "I need a refund for my bluetooth electronics purchase, I don't like the product" -> neutral
-        - "I really didn't like the product, I'm returning it" -> neutral
-        - "I'm not happy with my speaker system, the sound quality is not what I expected" -> neutral
-        - "Thanks so much for the quick replacement!" -> positive
+    # Tool-calling loop (capped at MAX_TOOL_ROUNDS)
+    for round_num in range(MAX_TOOL_ROUNDS):
+        response = await llm_with_tools.ainvoke(messages)
+        messages.append(response)
 
-        MESSAGE:
-        {text}
-        """
-        
-        try:
-            response = await self.llm.complete(prompt)
-            sentiment = response.strip().lower()
-            
-            # Validate response
-            return sentiment if sentiment in VALID_SENTIMENTS else SENTIMENT_NEUTRAL
-        except Exception as e:
-            print(f"  Sentiment classification failed: {e}")
-            return SENTIMENT_NEUTRAL
+        if not response.tool_calls:
+            break
 
+        tool_names = [tc["name"] for tc in response.tool_calls]
+        print(f"  {Fore.YELLOW}LLM chose tools: {', '.join(tool_names)}{Style.RESET_ALL}")
 
-    ## TOOLS ##
-    async def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> ToolReceipt:
-        """Execute a specific tool"""
-        tool_start = time.time()
-        
-        try:
-            tool_func = self.available_tools[tool_name]
-            response = await tool_func(user_query, user_id, policy_output, records_output, latest_sentiment)
-            
-            latency = (time.time() - tool_start) * 1000
-            
-            return ToolReceipt(
-                tool=tool_name,
-                status=response.get("status", 200),
-                latency_ms=latency,
-                response=response
-            )
-        except Exception as e:
-            latency = (time.time() - tool_start) * 1000
-            return ToolReceipt(
-                tool=tool_name,
-                status=500,
-                latency_ms=latency,
-                response={"error": str(e)}
+        # Execute tools via ToolNode
+        result = await tool_node.ainvoke({"messages": messages})
+        messages.extend(result["messages"])
+
+    # Collect tool results into ActionOutput
+    tool_receipts: list[dict] = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            try:
+                content = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+            except (json.JSONDecodeError, TypeError):
+                content = {"raw": str(msg.content)}
+            tool_receipts.append(
+                ToolReceipt(
+                    tool=msg.name or "unknown",
+                    status=content.get("status", 200) if isinstance(content, dict) else 200,
+                    latency_ms=0,
+                    response=content if isinstance(content, dict) else {"raw": str(content)},
+                ).model_dump()
             )
 
-    @log(span_type="tool", name="Create Refund Request")
-    async def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Simulate creating a new refund request"""
-        time.sleep(random.uniform(0.05, 0.15))
-        
-        # Extract amount and currency from existing requests or use defaults
-        amount = 0.0
-        currency = "USD"
-        
-        if records_output.requests:
-            latest_request = records_output.requests[0]
-            amount = latest_request.amount if hasattr(latest_request, 'amount') else latest_request.get('amount', 0.0)
-            currency = latest_request.currency if hasattr(latest_request, 'currency') else latest_request.get('currency', 'USD')
-        
-        return {
-            "status": 201,
-            "refund_request_id": f"RR_{random.randint(10000, 99999)}",
-            "user_id": user_id,
-            "amount": amount,
-            "currency": currency,
-            "description": user_query[:200],
-            "refund_status": "investigation",
-            "status_message": "Refund request created"
-        }
-
-    @log(span_type="tool", name="Create Ticket")
-    async def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Simulate creating a new support ticket"""
-        time.sleep(random.uniform(0.05, 0.2))
-        return {
-            "status": 201,
-            "ticket_id": f"TKT_{random.randint(10000, 99999)}",
-            "user_id": user_id,
-            "title": "Customer Request",
-            "description": user_query[:280],
-            "customer_sentiment": latest_sentiment,
-            "comments": {f"{time.strftime('%Y-%m-%d %H:%M:%S')}": "AI Ops Desk creating ticket"},
-            "status_message": "Ticket created"
-        }
-
-    @log(span_type="tool", name="Update Ticket")
-    async def _update_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Simulate updating an existing support ticket"""
-        time.sleep(random.uniform(0.05, 0.15))
-        existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
-        ticket_id = existing_ticket._id if existing_ticket and hasattr(existing_ticket, '_id') else (existing_ticket.get('_id') if existing_ticket else f"TKT_{random.randint(10000, 99999)}")
-        return {
-            "status": 200,
-            "ticket_id": ticket_id,
-            "customer_sentiment": latest_sentiment,
-            "comments": {f"{time.strftime('%Y-%m-%d %H:%M:%S')}": "AI Ops Desk updating ticket"},
-            "status_message": "Ticket updated"
-        }
-
-    @log(span_type="tool", name="Escalate Ticket")
-    async def _escalate_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Simulate ticket escalation"""
-        time.sleep(random.uniform(0.1, 0.3))
-        
-        return {
-            "status": 200,
-            "ticket_id": f"TKT_{random.randint(10000, 99999)}",
-            "escalation_level": "tier2",
-            "assigned_agent": f"agent_{random.randint(100, 999)}",
-            "escalation_reason": f"Negative sentiment detected: {user_query[:100]}",
-            "status_message": "Ticket escalated to tier 2 support"
-        }
-    
-    @log(span_type="tool", name="Explain Refund State")
-    async def _explain_refund_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Explain the current state of refund requests"""
-        time.sleep(random.uniform(0.05, 0.1))
-        requests = records_output.requests
-        
-        if not requests:
-            explanation = f"Based on your inquiry '{user_query[:50]}...', no refund requests found for this user."
+    # Determine resolution
+    if not tool_receipts:
+        resolution = "no_action_required"
+    else:
+        successful = [r["tool"] for r in tool_receipts if 200 <= r["status"] < 300]
+        if "create_refund_request" in successful:
+            resolution = "refund_request_created"
+        elif "escalate_ticket" in successful:
+            resolution = "ticket_escalated"
+        elif "update_ticket" in successful:
+            resolution = "ticket_updated"
+        elif "create_ticket" in successful:
+            resolution = "ticket_created"
+        elif "explain_refund_state" in successful:
+            resolution = "refund_state_explained"
         else:
-            latest_request = requests[0]  # Assuming sorted by date
-            status = latest_request.status if hasattr(latest_request, 'status') else latest_request.get("status", "unknown")
-            amount = latest_request.amount if hasattr(latest_request, 'amount') else latest_request.get("amount", "unknown")
-            currency = latest_request.currency if hasattr(latest_request, 'currency') else latest_request.get("currency", "USD")
-            
-            status_explanations = {
-                "investigation": "Your refund request is currently under investigation by our team.",
-                "refund in progress": "Your refund is being processed and will be completed soon.",
-                "paid": "Your refund has been successfully processed and paid.",
-                "closed": "This refund request has been closed.",
-                "cancelled": "This refund request has been cancelled."
-            }
-            
-            explanation = f"Regarding your inquiry: {user_query[:100]}... "
-            explanation += f"Refund Request Status: {status_explanations.get(status, f'Status: {status}')}. "
-            explanation += f"Amount: {currency} {amount}."
-        
-        return {
-            "status": 200,
-            "explanation": explanation,
-            "status_message": "Refund state explained"
-        }
-    
-    @log(span_type="llm", name="Order Status Analysis")
-    async def fake_llm_hallucination(self, user_query: str, latest_order: Order):
-        """Fake LLM call that hallucinates order status"""
-        # Return hallucinated response
-        return "delivered"
+            resolution = "action_failed"
 
-    @log(span_type="llm", name="Order Status Analysis")
-    async def real_llm_analysis(self, user_query: str, latest_order: Order):
-        """Real LLM call that returns actual database status"""
-        # Simulate LLM processing time
-        await asyncio.sleep(0.1)
-        # Return actual status from database
-        return latest_order.status
-        
-    @log(span_type="tool", name="Explain Order State")
-    async def _explain_order_state(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Explain the current state of user orders"""
-        time.sleep(random.uniform(0.05, 0.1))
-        orders = records_output.orders
-        
-        if not orders:
-            explanation = f"Based on your inquiry '{user_query[:50]}...', no orders found for this user."
-        else:
-            # Get the most recent order
-            latest_order = orders[0]  # Assuming sorted by date
-            product_name = latest_order.product_name if hasattr(latest_order, 'product_name') else latest_order.get("product_name", "unknown product")
-            order_date = latest_order.order_date if hasattr(latest_order, 'order_date') else latest_order.get("order_date", "unknown date")
-            
-            # Special case for user_007 - fake LLM hallucination
-            if user_id == "user_007":
-                # Call the fake LLM function
-                hallucinated_status = await self.fake_llm_hallucination(user_query, latest_order)
-                
-                status_explanations = {
-                    "delivered": "Your order has been successfully delivered and is ready for use.",
-                    "shipped": "Your order has been shipped and is on its way to you.",
-                    "processing": "Your order is currently being processed and prepared for shipment.",
-                    "returned": "This order has been returned and refunded.",
-                    "cancelled": "This order has been cancelled.",
-                    "pending": "Your order is pending confirmation."
-                }
-                
-                explanation = f"Regarding your inquiry: {user_query[:100]}... "
-                explanation += f"Order Status: {status_explanations.get(hallucinated_status, 'Status: delivered')}. "
-                explanation += f"Product: {product_name}. "
-                explanation += f"Order Date: {order_date}. "
-                explanation += f"[WARNING: LLM may have hallucinated this status - actual status: {hallucinated_status}]"
-            else:
-                # Real LLM call for other users (but just returns status from database)
+    tool_costs = {
+        "create_ticket": 0.0015,
+        "update_ticket": 0.001,
+        "escalate_ticket": 0.003,
+        "create_refund_request": 0.0015,
+        "explain_refund_state": 0.0005,
+        "explain_order_state": 0.0005,
+    }
+    total_cost = 0.002  # base cost for LLM calls
+    for r in tool_receipts:
+        total_cost += tool_costs.get(r["tool"], 0.001)
 
-                
-                # Call the real LLM function
-                actual_status = await self.real_llm_analysis(user_query, latest_order)
-                
-                status_explanations = {
-                    "delivered": "Your order has been successfully delivered and is ready for use.",
-                    "shipped": "Your order has been shipped and is on its way to you.",
-                    "processing": "Your order is currently being processed and prepared for shipment.",
-                    "returned": "This order has been returned and refunded.",
-                    "cancelled": "This order has been cancelled.",
-                    "pending": "Your order is pending confirmation."
-                }
-                
-                explanation = f"Regarding your inquiry: {user_query[:100]}... "
-                explanation += f"Order Status: {status_explanations.get(actual_status, f'Status: {actual_status}')}. "
-                explanation += f"Product: {product_name}. "
-                explanation += f"Order Date: {order_date}."
-            
-            # Add information about multiple orders if applicable
-            if len(orders) > 1:
-                explanation += f" You have {len(orders)} total orders in your account."
-        
-        return {
-            "status": 200,
-            "explanation": explanation,
-            "status_message": "Order state explained"
-        }
-    
-    def _calculate_tool_cost(self, tool_name: str) -> float:
-        """Calculate cost for tool usage"""
-        # Simplified cost calculation
-        costs = {
-            "create_ticket": 0.0015,
-            "update_ticket": 0.001,
-            "escalate_ticket": 0.003,
-            "create_refund_request": 0.0015,
-            "explain_refund_state": 0.0005,
-            "explain_order_state": 0.0005,
-        }
-        return costs.get(tool_name, 0.001)
-    
-    def _determine_resolution(self, tool_receipts: List[ToolReceipt], records_output: RecordsOutput) -> str:
-        """Determine final resolution based on tool results"""
-        if not tool_receipts:
-            return "no_action_required"
-        
-        successful_tools = [r.tool for r in tool_receipts if 200 <= r.status < 300]
-        
-        if "create_refund_request" in successful_tools:
-            return "refund_request_created"
-        elif "escalate_ticket" in successful_tools:
-            return "ticket_escalated"
-        elif "update_ticket" in successful_tools:
-            return "ticket_updated"
-        elif "create_ticket" in successful_tools:
-            return "ticket_created"
-        elif "explain_refund_state" in successful_tools:
-            return "refund_state_explained"
-        else:
-            return "action_failed"
-
-
-    def _find_existing_ticket(self, tickets: List, user_id: str):
-        """Find an existing active ticket for the user"""
-        # Find active ticket for this user
-        active_statuses = ("in_progress", "open", "escalated")
-        for ticket in tickets:
-            ticket_user_id = ticket.user_id if hasattr(ticket, 'user_id') else ticket.get("user_id")
-            ticket_status = ticket.status if hasattr(ticket, 'status') else ticket.get("status")
-            if (ticket_user_id == user_id and ticket_status in active_statuses):
-                return ticket
-        
-        # Fallback to any ticket for this user
-        for ticket in tickets:
-            ticket_user_id = ticket.user_id if hasattr(ticket, 'user_id') else ticket.get("user_id")
-            if ticket_user_id == user_id:
-                return ticket
-        return None
-
+    action_output = ActionOutput(
+        resolution=resolution,
+        tool_receipts=[ToolReceipt(**r) for r in tool_receipts],
+        cost_token_usd=total_cost,
+    )
+    print(f"  {Fore.YELLOW}Resolution: {resolution} ({len(tool_receipts)} tools){Style.RESET_ALL}")
+    return {"action_output": action_output.model_dump()}

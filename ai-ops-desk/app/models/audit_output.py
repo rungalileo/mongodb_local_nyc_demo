@@ -1,11 +1,7 @@
-"""
-AuditOutput model for agent outputs
+from __future__ import annotations
 
-This module defines the AuditOutput class used by the AuditAgent.
-"""
-
-from typing import Dict, Any, List
 from pydantic import BaseModel
+
 from app.models.action_output import ToolReceipt
 
 
@@ -17,11 +13,10 @@ class Citation(BaseModel):
 
 
 class AuditOutput(BaseModel):
-    """AuditOutput class for AuditAgent results"""
     interaction_id: str
-    span_ids: List[str]
-    citations: List[Citation]
-    tool_receipts: List[ToolReceipt]
+    span_ids: list[str]
+    citations: list[Citation]
+    tool_receipts: list[ToolReceipt]
     final_verdict: str
     rationale: str
     created_at: str

@@ -1,59 +1,59 @@
-"""
-A3: Records Agent - Operational joins and aggregation pipelines
-"""
+from __future__ import annotations
 
-import time
-from typing import Dict, Any, List
-from pydantic import BaseModel
+from typing import Any
+
 from colorama import Fore, Style
-from app.rag.queries import get_user_refund_requests, get_user_tickets, get_user_order
-from app.models.order import Order
-from app.models.refund_request import RefundRequest
-from app.models.ticket import Ticket
-from app.models.records_output import RecordsOutput
-from app.toggles import ToggleManager
-from galileo import log
-# Constants for data limits
-NUM_REQUESTS_INCLUDED = 3
-NUM_TICKETS_INCLUDED = 5
-NUM_ORDERS_INCLUDED = 5
+
+from app.rag.atlas_client import embed, get_db
 
 
-class RecordsAgent:
-    """A3: Records Agent - Operational data joins and aggregation"""
-    
-    def __init__(self):
-        self.toggles = ToggleManager()
-    
-    @log(span_type="agent", name="Records Agent - Process")
-    async def process(self, user_query: str, user_id: str) -> RecordsOutput:
+async def records_node(state: dict) -> dict:
+    """Records Agent — fetch refund requests, tickets, and orders from MongoDB."""
+    print(f"{Fore.GREEN}-> Records Agent: Starting for {state.get('user_id', '?')}{Style.RESET_ALL}")
+    user_id = state["user_id"]
+    user_query = state["user_query"]
+    db = get_db()
 
-        # Goal of this function is to get latest relevant claims and tickets
-        try:
-            print(f"  {Fore.GREEN}Fetching refund requests...{Style.RESET_ALL}")
-            # Get user data
-            refund_requests = await get_user_refund_requests(user_id)
-            print(f"  {Fore.GREEN}Found {len(refund_requests) if refund_requests else 0} refund requests{Style.RESET_ALL}")
+    refund_requests = list(db.refund_requests.find({"user_id": user_id}).limit(3))
+    for r in refund_requests:
+        r["_id"] = str(r["_id"])
 
-            print(f"  {Fore.GREEN}Fetching support tickets...{Style.RESET_ALL}")
-            tickets = await get_user_tickets(user_id)
-            print(f"  {Fore.GREEN}Found {len(tickets) if tickets else 0} support tickets{Style.RESET_ALL}")
+    tickets = list(db.tickets.find({"user_id": user_id}).limit(5))
+    for t in tickets:
+        t["_id"] = str(t["_id"])
 
-            print(f"  {Fore.GREEN}Fetching orders using vector search...{Style.RESET_ALL}")
-            orders = await get_user_order(user_id, user_query)
-            print(f"  {Fore.GREEN}Found {len(orders) if orders else 0} relevant orders{Style.RESET_ALL}")
+    # Vector search for relevant orders
+    try:
+        vec = embed([user_query])[0]
+        pipeline = [
+            {
+                "$vectorSearch": {
+                    "index": "order_index",
+                    "path": "embedding",
+                    "queryVector": vec,
+                    "numCandidates": 10,
+                    "limit": 1,
+                    "filter": {"user_id": user_id},
+                }
+            }
+        ]
+        orders = list(db.orders.aggregate(pipeline))
+    except Exception as e:
+        print(f"  {Fore.YELLOW}Vector search failed, falling back: {e}{Style.RESET_ALL}")
+        orders = list(db.orders.find({"user_id": user_id}).limit(1))
 
-            # Take most recent N items - no filtering for now
-            recent_requests = refund_requests[:NUM_REQUESTS_INCLUDED] if refund_requests else []
-            recent_tickets = tickets[:NUM_TICKETS_INCLUDED] if tickets else []
-            relevant_orders = orders[:NUM_ORDERS_INCLUDED] if orders else []
+    for o in orders:
+        o.pop("embedding", None)
+        o["_id"] = str(o["_id"])
 
-            print(f"  {Fore.GREEN}Aggregated: {len(recent_requests)} requests, {len(recent_tickets)} tickets, {len(relevant_orders)} orders{Style.RESET_ALL}")
-
-            return RecordsOutput(
-                requests=recent_requests,
-                tickets=recent_tickets,
-                orders=relevant_orders,
-            )
-        except Exception as e:
-            raise e
+    print(
+        f"  {Fore.GREEN}Found {len(refund_requests)} requests, "
+        f"{len(tickets)} tickets, {len(orders)} orders{Style.RESET_ALL}"
+    )
+    return {
+        "records": {
+            "requests": refund_requests,
+            "tickets": tickets,
+            "orders": orders,
+        }
+    }
