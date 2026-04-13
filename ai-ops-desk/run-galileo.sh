@@ -8,12 +8,23 @@ cd "$SCRIPT_DIR"
 
 # ── Credentials ──────────────────────────────────────────────────
 # MongoDB Atlas credentials
+#   Required variables:
+#     MONGODB_URI="mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority"
 source ~/.cr/.cr.mongo.crm-demo
 
 # Galileo credentials
+#   Required variables:
+#     GALILEO_API_KEY="A1Cch..."
+#     GALILEO_PROJECT="my-project"
+#     GALILEO_LOG_STREAM="default"
+#     GALILEO_CONSOLE_URL="https://console.galileo.ai"
 source ~/.cr/.cr.galileo
 
-# SSL — corporate proxy CA bundle
+# OpenAI (if not in .env)
+#   Required variables:
+#     OPENAI_API_KEY="sk-..."
+
+# SSL — corporate proxy CA bundle (optional)
 [[ -f ~/.corporate-certs/env.sh ]] && source ~/.corporate-certs/env.sh
 
 # ── App .env (MongoDB, OpenAI) ──────────────────────────────────
