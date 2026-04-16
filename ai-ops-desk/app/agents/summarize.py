@@ -12,6 +12,7 @@ input→output delta becomes clear: user question in, resolution answer out.
 from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 
 SYSTEM_PROMPT = """\
@@ -28,7 +29,7 @@ Do NOT repeat the customer's original question back to them.
 Be direct and helpful."""
 
 
-async def summarize_node(state: dict) -> dict:
+async def summarize_node(state: dict, config: RunnableConfig) -> dict:
     """Summarize Agent — distill accumulated state into a user-facing response."""
     action = state.get("action_output", {})
     audit = state.get("audit_output", {})
@@ -73,7 +74,7 @@ async def summarize_node(state: dict) -> dict:
     response = await llm.ainvoke([
         SystemMessage(content=SYSTEM_PROMPT),
         HumanMessage(content=context),
-    ])
+    ], config=config)
 
     summary = response.content.strip()
     # Write an AIMessage so SDOT captures it as gen_ai.output.messages
