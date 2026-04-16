@@ -1,1 +1,1 @@
-"""CRM Ops Desk — LangGraph multi-agent demo for SDOT instrumentation."""
+"""AI Operations Desk - Multi-Agent Demo"""
