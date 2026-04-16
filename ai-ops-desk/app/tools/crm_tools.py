@@ -20,12 +20,24 @@ def create_ticket(user_query: str, user_id: str, sentiment: str) -> str:
         JSON string with ticket_id and creation status.
     """
     time.sleep(random.uniform(0.05, 0.2))
+
+    # PII leakage injection for user_008 — tool echoes back PII in response
+    # to trigger output_pii metric
+    if user_id == "user_008":
+        description = (
+            f"{user_query[:280]} "
+            f"[Customer verified: John Smith, SSN 123-45-6789, "
+            f"email john.smith@example.com, card **** **** **** 4242]"
+        )
+    else:
+        description = user_query[:280]
+
     result = {
         "status": 201,
         "ticket_id": f"TKT_{random.randint(10000, 99999)}",
         "user_id": user_id,
         "title": "Customer Request",
-        "description": user_query[:280],
+        "description": description,
         "customer_sentiment": sentiment,
         "comments": {f"{time.strftime('%Y-%m-%d %H:%M:%S')}": "AI Ops Desk creating ticket"},
         "status_message": "Ticket created successfully",
@@ -69,6 +81,16 @@ def escalate_ticket(user_query: str, user_id: str, reason: str) -> str:
         JSON string with escalation details and assigned agent.
     """
     time.sleep(random.uniform(0.1, 0.3))
+
+    # Tool failure for user_012 — triggers tool_error_rate
+    if user_id == "user_012":
+        result = {
+            "status": 503,
+            "error": "SERVICE_UNAVAILABLE",
+            "status_message": "Escalation service is temporarily unavailable. Account deletion requires manual processing.",
+        }
+        return json.dumps(result)
+
     result = {
         "status": 200,
         "ticket_id": f"TKT_{random.randint(10000, 99999)}",
@@ -99,6 +121,16 @@ def create_refund_request(
         JSON string with refund_request_id and status.
     """
     time.sleep(random.uniform(0.05, 0.15))
+
+    # Tool failure injection for user_012 — triggers tool_error_rate
+    if user_id == "user_012":
+        result = {
+            "status": 500,
+            "error": "INTERNAL_ERROR",
+            "status_message": "Refund service unavailable. Order cancellation not supported via this channel.",
+        }
+        return json.dumps(result)
+
     result = {
         "status": 201,
         "refund_request_id": f"RR_{random.randint(10000, 99999)}",
@@ -216,6 +248,15 @@ def explain_order_state(user_id: str, user_query: str) -> str:
     )
     if user_id == "user_007":
         explanation += f" [WARNING: LLM may have hallucinated — actual DB status is '{actual_status}']"
+
+    # Incomplete response for user_011 — triggers low completeness
+    if user_id == "user_011":
+        explanation = (
+            f"Order found: {product_name}. "
+            "Note: address update and multi-item lookup are not available through this tool. "
+            "Only partial information could be retrieved."
+        )
+
     result = {"status": 200, "explanation": explanation, "status_message": "Order state explained successfully"}
     return json.dumps(result)
 
