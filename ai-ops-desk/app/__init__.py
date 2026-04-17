@@ -1,1 +1,1 @@
-# AI Operations Desk - Multi-Agent Demo
+"""AI Operations Desk - Multi-Agent Demo"""
