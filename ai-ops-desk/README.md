@@ -69,7 +69,7 @@ This demo showcases:
    python setup_tickets.py
    ```
 
-5. **Run scenarios**
+5. **Run scenarios (CLI)**
    ```bash
    python main.py --scenario refund_bluetooth_earbuds
 
@@ -78,6 +78,14 @@ This demo showcases:
    python main.py --index 0->6
    ```
    We also have a toggle manager to activate different failure states, but more on that later
+
+6. **Run the API server (for the Next.js frontend)**
+   ```bash
+   uvicorn app.api:app --reload --port 8000
+   ```
+   Then start the frontend in `../ai-ops-desk-web` (`npm run dev`).
+   Endpoints: `/api/health`, `/api/users`, `/api/scenarios`, `/api/chat`,
+   `/api/chat/stream` (SSE — emits `agent_done` per node, then `complete`).
 
 ### Available Toggles
 - **drift**: Simulates policy drift by forcing use of expired policies

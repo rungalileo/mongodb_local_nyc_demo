@@ -105,6 +105,11 @@ class ActionAgent:
         )
         existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
         
+        # Create or update ticket for any request
+        if existing_ticket:
+            tools.append("update_ticket")
+        else:
+            tools.append("create_ticket")
         # Handle ticket escalation for extremely negative sentiment
         if latest_sentiment == SENTIMENT_NEGATIVE:
             tools.append("escalate_ticket")
@@ -116,12 +121,6 @@ class ActionAgent:
         
         if intent == INTENT_ORDER_INQUIRY:
             tools.append("explain_order_state")
-
-        # Create or update ticket for any request
-        if existing_ticket:
-            tools.append("update_ticket")
-        else:
-            tools.append("create_ticket")
 
         return tools
     

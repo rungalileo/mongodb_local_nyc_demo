@@ -18,6 +18,7 @@ from app.agents.policy import PolicyAgent
 from app.agents.records import RecordsAgent
 from app.agents.action import ActionAgent
 from app.agents.audit import AuditAgent
+from app.agents.synthesizer import SynthesizerAgent
 from app.models.policy_output import PolicyOutput
 from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput
@@ -40,6 +41,7 @@ class AgentState(dict):
     records_output: Optional[RecordsOutput] = None
     action_output: Optional[ActionOutput] = None
     audit_output: Optional[AuditOutput] = None
+    customer_reply: Optional[str] = None
     
     # Control flow
     status: str = "running"
@@ -165,8 +167,33 @@ async def audit_node(state: AgentState) -> AgentState:
     return state
 
 
+@log(span_type="workflow", name="Synthesizer Agent")
+async def synthesizer_node(state: AgentState) -> AgentState:
+    """Synthesizer agent node: composes the customer-facing reply."""
+    print(f"{Fore.MAGENTA}→ Synthesizer Agent: Starting{Style.RESET_ALL}")
+    record_agent_timing(state, "synthesizer", start=True)
+
+    try:
+        agent = SynthesizerAgent()
+        reply = await agent.process(
+            user_query=state["user_query"],
+            action_output=state.get("action_output"),
+            error=state.get("error"),
+        )
+        state["customer_reply"] = reply
+        print(f"{Fore.MAGENTA}✓ Synthesizer Agent: Complete{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"✗ Synthesizer Agent failed: {str(e)}")
+        state["customer_reply"] = (
+            "Thanks — I've logged your request and someone will follow up shortly."
+        )
+
+    record_agent_timing(state, "synthesizer", start=False)
+    return state
+
+
 '''
-policy → records → action → audit → END
+records → policy → action → audit → synthesizer → END
 '''
 async def create_ops_desk_graph():
     """Create and configure the operations desk agent graph"""
@@ -178,6 +205,7 @@ async def create_ops_desk_graph():
     workflow.add_node("policy", policy_node)
     workflow.add_node("action", action_node)
     workflow.add_node("audit", audit_node)
+    workflow.add_node("synthesizer", synthesizer_node)
     
     # Set entry point
     workflow.set_entry_point("records")
@@ -186,6 +214,7 @@ async def create_ops_desk_graph():
     workflow.add_edge("records", "policy")
     workflow.add_edge("policy", "action")
     workflow.add_edge("action", "audit")
-    workflow.add_edge("audit", END)
+    workflow.add_edge("audit", "synthesizer")
+    workflow.add_edge("synthesizer", END)
     
     return workflow.compile()
