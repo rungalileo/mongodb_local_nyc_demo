@@ -5,6 +5,7 @@ Run with:
     uvicorn app.api:app --reload --port 8000
 """
 import json
+import os
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -22,9 +23,15 @@ from app.rag.atlas_client import get_atlas_client
 
 app = FastAPI(title="AI Operations Desk API")
 
+# Comma-separated list of allowed origins. Falls back to localhost for dev.
+# In prod, set ALLOWED_ORIGINS to your frontend domain(s), e.g.
+#   ALLOWED_ORIGINS=https://cisco-demo-frontend.up.railway.app
+_origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+_allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
