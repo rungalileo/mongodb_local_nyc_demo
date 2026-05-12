@@ -12,6 +12,7 @@ from galileo import galileo_context, log
 from app.graph import create_ops_desk_graph
 from app.toggles import ToggleManager
 from app.galileo_links import galileo_session_url
+from app.agent_control_setup import init_agent_control
 
 
 # Cache the compiled graph at module scope. Keeps `graph` out of
@@ -23,6 +24,10 @@ _graph = None
 async def _get_graph():
     global _graph
     if _graph is None:
+        # Initialize Agent Control once on first use. This connects to the
+        # control plane and pulls down the current set of controls associated
+        # with this agent (e.g. block-zero-refund).
+        init_agent_control()
         _graph = await create_ops_desk_graph()
     return _graph
 

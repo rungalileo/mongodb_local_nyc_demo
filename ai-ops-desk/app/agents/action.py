@@ -12,6 +12,8 @@ from app.models.order import Order
 from app.toggles import ToggleManager
 from galileo import log
 
+from agent_control import control, ControlViolationError
+
 # Intent classification constants
 INTENT_REFUND_REQUEST = "refund_request"
 INTENT_ORDER_INQUIRY = "order_inquiry"
@@ -237,6 +239,39 @@ class ActionAgent:
                 latency_ms=latency,
                 response=response
             )
+        except ControlViolationError as e:
+            # Agent Control denied this tool call. Surface it as a 4xx receipt
+            # so the rest of the workflow can keep going (audit + reply still
+            # run) and the operator can see *why* it was blocked.
+            #
+            # NOTE: This is intentionally redundant with the inline catch in
+            # _create_refund_request. We catch here too because the @control
+            # decorator on the tool raises BEFORE @log sees a return value,
+            # which would make the Galileo tool span show an exception instead
+            # of the structured block payload. The inline catch in each tool
+            # is what fixes the Galileo span; this outer catch is the safety
+            # net for any tool that gets @control'd later without remembering
+            # the inline wrapper pattern.
+            #
+            # TODO: Remove both catches once Enterprise Agent Control ships
+            # native span instrumentation that auto-logs deny outcomes as
+            # structured tool outputs (rather than raising through user code).
+            latency = (time.time() - tool_start) * 1000
+            print(
+                f"  {Fore.RED}🚫 Tool {tool_name} blocked by control "
+                f"'{getattr(e, 'control_name', 'unknown')}': {e}{Style.RESET_ALL}"
+            )
+            return ToolReceipt(
+                tool=tool_name,
+                status=412,  # Precondition Failed -- the control's precondition
+                latency_ms=latency,
+                response={
+                    "error": "blocked_by_agent_control",
+                    "control_name": getattr(e, "control_name", None),
+                    "message": str(e),
+                    "metadata": getattr(e, "metadata", None),
+                },
+            )
         except Exception as e:
             latency = (time.time() - tool_start) * 1000
             return ToolReceipt(
@@ -248,18 +283,58 @@ class ActionAgent:
 
     @log(span_type="tool", name="Create Refund Request")
     async def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Simulate creating a new refund request"""
+        """Simulate creating a new refund request.
+
+        The actual refund logic lives in ``_create_refund_request_checked``,
+        which is decorated with ``@control``. We catch ``ControlViolationError``
+        here so Galileo's ``@log`` span sees a normal return value describing
+        the block, rather than an exception. The shape mirrors what
+        ``_execute_tool`` would emit, so the frontend renders it the same way.
+
+        Why the two-function split: decorator order forces a tradeoff. If
+        ``@control`` is outside ``@log``, the tool span never records the
+        block (control raises first). If ``@control`` is inside ``@log``,
+        the span records the block but as an exception, not as a structured
+        output. Splitting lets ``@log`` wrap a function that always returns
+        cleanly — block or success — so the Galileo trace tells the full
+        story.
+
+        TODO: Collapse back to a single decorated function once Enterprise
+        Agent Control ships native span instrumentation that emits deny
+        outcomes as structured tool outputs directly.
+        """
+        try:
+            return await self._create_refund_request_checked(
+                user_query, user_id, policy_output, records_output, latest_sentiment,
+            )
+        except ControlViolationError as e:
+            print(
+                f"  {Fore.RED}🚫 create_refund_request blocked by control "
+                f"'{getattr(e, 'control_name', 'unknown')}': {e}{Style.RESET_ALL}"
+            )
+            return {
+                "status": 412,
+                "error": "blocked_by_agent_control",
+                "control_name": getattr(e, "control_name", None),
+                "message": str(e),
+                "metadata": getattr(e, "metadata", None),
+                "status_message": f"Blocked by Agent Control: {e}",
+            }
+
+    @control(step_name="create_refund_request")
+    async def _create_refund_request_checked(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+        """Refund logic guarded by Agent Control. Do not call directly — go
+        through ``_create_refund_request`` so the block path is logged cleanly."""
         time.sleep(random.uniform(0.05, 0.15))
-        
-        # Extract amount and currency from existing requests or use defaults
+
         amount = 0.0
         currency = "USD"
-        
+
         if records_output.requests:
             latest_request = records_output.requests[0]
             amount = latest_request.amount if hasattr(latest_request, 'amount') else latest_request.get('amount', 0.0)
             currency = latest_request.currency if hasattr(latest_request, 'currency') else latest_request.get('currency', 'USD')
-        
+
         return {
             "status": 201,
             "refund_request_id": f"RR_{random.randint(10000, 99999)}",

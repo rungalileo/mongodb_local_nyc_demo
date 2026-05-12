@@ -17,6 +17,7 @@ from colorama import Fore, Style, init
 from app.runner import run_query
 from app.scenarios import SCENARIOS
 from app.evals import generate_evals_report
+from app.agent_control_setup import shutdown_agent_control
 
 # Initialize colorama
 init(autoreset=True)
@@ -175,6 +176,8 @@ async def main():
         import traceback
         traceback.print_exc()
         return 1
+    finally:
+        await shutdown_agent_control()
 
 
 if __name__ == "__main__":

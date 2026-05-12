@@ -134,23 +134,59 @@ export function OpsDrawer({
                 <p className="text-xs text-zinc-500">No tools fired.</p>
               )}
               <ul className="space-y-2">
-                {result.actions.map((a, i) => (
-                  <li
-                    key={i}
-                    className="rounded-md border border-zinc-200 dark:border-zinc-800 p-2.5 text-xs"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className={a.ok ? "text-emerald-600" : "text-red-600"}>
-                        {a.ok ? "✓" : "✗"}
-                      </span>
-                      <span className="font-mono">{a.tool}</span>
-                      <span className="ml-auto text-zinc-500">{a.status}</span>
-                    </div>
-                    <pre className="mt-1.5 text-[11px] text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-words font-mono">
-                      {summarizeResponse(a.response)}
-                    </pre>
-                  </li>
-                ))}
+                {result.actions.map((a, i) => {
+                  const blocked =
+                    a.response?.error === "blocked_by_agent_control";
+                  return (
+                    <li
+                      key={i}
+                      className={`rounded-md border p-2.5 text-xs ${
+                        blocked
+                          ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-700"
+                          : "border-zinc-200 dark:border-zinc-800"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={
+                            blocked
+                              ? "text-amber-600 dark:text-amber-400"
+                              : a.ok
+                              ? "text-emerald-600"
+                              : "text-red-600"
+                          }
+                        >
+                          {blocked ? "🛡" : a.ok ? "✓" : "✗"}
+                        </span>
+                        <span className="font-mono">{a.tool}</span>
+                        <span className="ml-auto text-zinc-500">
+                          {a.status}
+                        </span>
+                      </div>
+                      {blocked && (
+                        <div className="mt-1.5 space-y-1">
+                          <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                            Blocked by Agent Control · control:{" "}
+                            <code className="font-mono">
+                              {String(a.response?.control_name ?? "unknown")}
+                            </code>
+                          </div>
+                          {typeof a.response?.message === "string" && (
+                            <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-100/60 dark:bg-amber-900/30 px-2 py-1.5 text-[11px] text-amber-900 dark:text-amber-100">
+                              {stripControlPrefix(
+                                String(a.response.message),
+                                String(a.response?.control_name ?? ""),
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <pre className="mt-1.5 text-[11px] text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-words font-mono">
+                        {summarizeResponse(a.response, { skip: blocked ? ["message", "control_name"] : [] })}
+                      </pre>
+                    </li>
+                  );
+                })}
               </ul>
             </Section>
           )}
@@ -235,10 +271,35 @@ function StatusDot({ status }: { status: AgentStatus }) {
   return <span className={`mt-1.5 inline-block w-2 h-2 rounded-full ${cls}`} />;
 }
 
-function summarizeResponse(r: Record<string, unknown>): string {
-  const keys = ["refund_request_id", "ticket_id", "amount", "currency", "escalation_level", "customer_sentiment", "explanation"];
+function stripControlPrefix(message: string, controlName: string): string {
+  // SDK formats messages as: "Control violation [<name>]: <reason>".
+  // We already render the control name above; show just the reason.
+  const prefix = `Control violation [${controlName}]:`;
+  if (message.startsWith(prefix)) return message.slice(prefix.length).trim();
+  const generic = /^Control violation \[[^\]]+\]:\s*/;
+  return message.replace(generic, "");
+}
+
+function summarizeResponse(
+  r: Record<string, unknown>,
+  opts: { skip?: string[] } = {},
+): string {
+  const skip = new Set(opts.skip ?? []);
+  const keys = [
+    "refund_request_id",
+    "ticket_id",
+    "amount",
+    "currency",
+    "escalation_level",
+    "customer_sentiment",
+    "explanation",
+    // Agent Control fields surface when a tool is blocked by a control.
+    "message",
+    "control_name",
+  ];
   const lines: string[] = [];
   for (const k of keys) {
+    if (skip.has(k)) continue;
     if (r[k] !== undefined) {
       let v = String(r[k]);
       if (v.length > 140) v = v.slice(0, 140) + "…";
