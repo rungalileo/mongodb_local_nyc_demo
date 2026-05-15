@@ -317,6 +317,30 @@ async def upload_orders():
             shipping_address={"city": "Portland", "country": "US"},
             status="in-transit",
         ),
+        # User 1 - "Refund compliance" demo scenario.
+        # Customer buys 2x premium headphones, total $699.98. The refund tool
+        # has a stale-lookup bug that grabs the amount from this user's prior
+        # unrelated $89.00 refund record (refund_005) instead of computing it
+        # from the order, so the requested refund amount is wildly off. The
+        # refund-compliance Agent Control rule catches the mismatch.
+        Order(
+            _id="order_021",
+            user_id="user_001",
+            sku="ELEC_HEADPHONES_SONY_XM5",
+            product_name="Sony WH-1000XM5 Noise-Canceling Headphones",
+            quantity=2,
+            unit_price=349.99,
+            currency="USD",
+            order_date=datetime(2026, 5, 5),
+            shipping_address={
+                "street": "742 Evergreen Terrace",
+                "city": "Brooklyn",
+                "state": "NY",
+                "postal_code": "11201",
+                "country": "US",
+            },
+            status="delivered",
+        ),
     ]
 
     try:

@@ -14,11 +14,42 @@ from galileo import log
 
 from agent_control import control, ControlViolationError
 
+
+def _receipt_total_from_orders(orders: List[Any]) -> tuple[float | None, str | None, str | None]:
+    """Compute (total_amount, order_id, currency) for the user's top order.
+
+    Used by ``_create_refund_request_checked`` to surface the ground-truth
+    receipt amount alongside whatever amount the agent ends up using, so the
+    refund-compliance control can compare them.
+    """
+    if not orders:
+        return None, None, None
+    order = orders[0]
+
+    def _g(attr: str, default: Any = None) -> Any:
+        return getattr(order, attr, None) if hasattr(order, attr) else (
+            order.get(attr, default) if isinstance(order, dict) else default
+        )
+
+    try:
+        quantity = int(_g("quantity", 1) or 1)
+        unit_price = float(_g("unit_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None, _g("_id") or _g("id"), _g("currency")
+    total = round(unit_price * quantity, 2)
+    return total, _g("_id") or _g("id"), _g("currency")
+
 # Intent classification constants
 INTENT_REFUND_REQUEST = "refund_request"
 INTENT_ORDER_INQUIRY = "order_inquiry"
+INTENT_RECEIPT_REQUEST = "receipt_request"
 INTENT_GENERAL = "general"
-VALID_INTENTS = [INTENT_REFUND_REQUEST, INTENT_ORDER_INQUIRY, INTENT_GENERAL]
+VALID_INTENTS = [
+    INTENT_REFUND_REQUEST,
+    INTENT_ORDER_INQUIRY,
+    INTENT_RECEIPT_REQUEST,
+    INTENT_GENERAL,
+]
 
 # Sentiment classification constants
 SENTIMENT_NEGATIVE = "negative"
@@ -41,6 +72,7 @@ class ActionAgent:
             "create_refund_request": self._create_refund_request,
             "explain_refund_state": self._explain_refund_state,
             "explain_order_state": self._explain_order_state,
+            "get_receipt": self._get_receipt,
         }
         self.toggles = ToggleManager()
     
@@ -120,9 +152,16 @@ class ActionAgent:
         if intent == INTENT_REFUND_REQUEST:
             tools.append("create_refund_request")
             tools.append("explain_refund_state")
-        
+
         if intent == INTENT_ORDER_INQUIRY:
             tools.append("explain_order_state")
+
+        # "Show me the receipt for X" — surface the order details as a
+        # structured receipt. Used in the refund-compliance demo: customer
+        # asks for the receipt first, then asks for a refund, and we want to
+        # show that the refund amount doesn't match the receipt amount.
+        if intent == INTENT_RECEIPT_REQUEST:
+            tools.append("get_receipt")
 
         return tools
     
@@ -134,15 +173,17 @@ class ActionAgent:
         Classify the following customer message into one of these intents:
         - {INTENT_REFUND_REQUEST}: Customer wants a refund, return, or money back
         - {INTENT_ORDER_INQUIRY}: Customer asking about order status, delivery, shipping
+        - {INTENT_RECEIPT_REQUEST}: Customer wants to see the receipt, invoice, or purchase details for an order (e.g. "show me the receipt", "what did I pay", "send me the invoice", "show purchase details")
         - {INTENT_GENERAL}: Any other customer service request
 
-        If a return request already exists for this consumer for the product asked about, classify as {INTENT_ORDER_INQUIRY}.
-        We are passing to you a list of relevant refund requests for this consumer.
+        Important rules:
+        - If the customer is explicitly asking to return, refund, or get money back for a product, classify as {INTENT_REFUND_REQUEST} — even when other unrelated prior refund records exist in their history.
+        - Only classify as {INTENT_ORDER_INQUIRY} when a refund request already exists for the SAME product the customer is asking about right now (same product name / SKU). Prior refunds for *different* products do not count.
 
         Customer message: "{text}"
         Existing context: "{context}"
-        
-        Respond with only the intent name ({INTENT_REFUND_REQUEST}, {INTENT_ORDER_INQUIRY}, or {INTENT_GENERAL}):
+
+        Respond with only the intent name ({INTENT_REFUND_REQUEST}, {INTENT_ORDER_INQUIRY}, {INTENT_RECEIPT_REQUEST}, or {INTENT_GENERAL}):
         """
         
         try:
@@ -324,7 +365,17 @@ class ActionAgent:
     @control(step_name="create_refund_request")
     async def _create_refund_request_checked(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Refund logic guarded by Agent Control. Do not call directly — go
-        through ``_create_refund_request`` so the block path is logged cleanly."""
+        through ``_create_refund_request`` so the block path is logged cleanly.
+
+        Known bug (intentional, demonstrated by the refund-compliance control):
+        the agent reads the refund amount from the user's most recent prior
+        refund record (``records_output.requests[0]``) instead of computing it
+        from the order being refunded. When the customer asks to refund a
+        recent order whose total differs from any prior refund they had, the
+        agent reports the wrong amount. The ``refund-compliance`` control on
+        the AC server flips ``amount_matches_receipt`` to the trigger value
+        and denies the call.
+        """
         time.sleep(random.uniform(0.05, 0.15))
 
         amount = 0.0
@@ -335,6 +386,19 @@ class ActionAgent:
             amount = latest_request.amount if hasattr(latest_request, 'amount') else latest_request.get('amount', 0.0)
             currency = latest_request.currency if hasattr(latest_request, 'currency') else latest_request.get('currency', 'USD')
 
+        receipt_amount, receipt_order_id, receipt_currency = _receipt_total_from_orders(
+            records_output.orders
+        )
+        if receipt_currency:
+            currency = receipt_currency
+
+        # Float equality with a small tolerance so we don't false-positive on
+        # rounding noise. The control evaluator only sees the boolean.
+        amount_matches_receipt = (
+            receipt_amount is not None
+            and abs(float(amount) - float(receipt_amount)) < 0.01
+        )
+
         return {
             "status": 201,
             "refund_request_id": f"RR_{random.randint(10000, 99999)}",
@@ -343,7 +407,66 @@ class ActionAgent:
             "currency": currency,
             "description": user_query[:200],
             "refund_status": "investigation",
-            "status_message": "Refund request created"
+            "status_message": "Refund request created",
+            # ---- refund-compliance signals ----
+            "receipt_amount": receipt_amount,
+            "receipt_order_id": receipt_order_id,
+            "amount_matches_receipt": amount_matches_receipt,
+        }
+
+    @log(span_type="tool", name="Get Receipt")
+    async def _get_receipt(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+        """Return a detailed receipt for the user's most relevant order.
+
+        Used in the refund-compliance demo: the customer asks for a receipt
+        for a recent purchase, then asks for a refund — making it obvious to
+        anyone watching the demo that the refund amount the agent later
+        produces doesn't match the receipt total.
+        """
+        time.sleep(random.uniform(0.05, 0.15))
+        orders = records_output.orders
+
+        if not orders:
+            return {
+                "status": 404,
+                "error": "no_order_found",
+                "status_message": (
+                    f"No order found for this customer matching '{user_query[:80]}'."
+                ),
+            }
+
+        order = orders[0]
+
+        def _g(attr: str, default: Any = None) -> Any:
+            return getattr(order, attr, None) if hasattr(order, attr) else (
+                order.get(attr, default) if isinstance(order, dict) else default
+            )
+
+        order_id = _g("_id") or _g("id")
+        product_name = _g("product_name", "unknown")
+        sku = _g("sku", "unknown")
+        quantity = int(_g("quantity", 1) or 1)
+        unit_price = float(_g("unit_price", 0.0) or 0.0)
+        currency = _g("currency", "USD")
+        order_date = _g("order_date")
+        shipping_address = _g("shipping_address", {}) or {}
+        status = _g("status", "unknown")
+
+        total_amount = round(unit_price * quantity, 2)
+
+        return {
+            "status": 200,
+            "order_id": order_id,
+            "product_name": product_name,
+            "sku": sku,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "total_amount": total_amount,
+            "currency": currency,
+            "order_date": order_date.isoformat() if hasattr(order_date, "isoformat") else order_date,
+            "shipping_address": shipping_address,
+            "order_status": status,
+            "status_message": "Receipt retrieved",
         }
 
     @log(span_type="tool", name="Create Ticket")
@@ -509,6 +632,7 @@ class ActionAgent:
             "create_refund_request": 0.0015,
             "explain_refund_state": 0.0005,
             "explain_order_state": 0.0005,
+            "get_receipt": 0.0005,
         }
         return costs.get(tool_name, 0.001)
     
@@ -523,6 +647,8 @@ class ActionAgent:
             return "refund_request_created"
         elif "escalate_ticket" in successful_tools:
             return "ticket_escalated"
+        elif "get_receipt" in successful_tools:
+            return "receipt_provided"
         elif "update_ticket" in successful_tools:
             return "ticket_updated"
         elif "create_ticket" in successful_tools:

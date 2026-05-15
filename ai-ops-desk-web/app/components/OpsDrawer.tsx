@@ -293,6 +293,19 @@ function summarizeResponse(
     "escalation_level",
     "customer_sentiment",
     "explanation",
+    // Receipt tool fields.
+    "order_id",
+    "product_name",
+    "sku",
+    "quantity",
+    "unit_price",
+    "total_amount",
+    "order_date",
+    "order_status",
+    // Refund-compliance signals on create_refund_request output.
+    "receipt_amount",
+    "receipt_order_id",
+    "amount_matches_receipt",
     // Agent Control fields surface when a tool is blocked by a control.
     "message",
     "control_name",

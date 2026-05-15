@@ -126,7 +126,39 @@ async def upload_refund_requests():
             return_tracking_number="RET456789123",
             created_at=datetime(2024, 9, 15, 10, 20, 0),
             updated_at=datetime(2024, 9, 25, 14, 10, 0),
-        )
+        ),
+        # User 1 - stale prior refund used by the "refund compliance" demo.
+        # This is an unrelated small refund from months ago. The buggy
+        # _create_refund_request_checked tool grabs THIS amount ($89.00) when
+        # asked to refund the headphones order ($699.98). The mismatch is
+        # what the refund-compliance Agent Control rule catches.
+        RefundRequest(
+            _id="refund_005",
+            user_id="user_001",
+            sku="HOME_PHONE_CASE_001",
+            product_name="Silicone Phone Case",
+            amount=89.00,
+            currency="USD",
+            status="paid",
+            filed_date=datetime(2026, 2, 4, 11, 0, 0),
+            purchase_date=datetime(2026, 1, 30),
+            reason="wrong_color",
+            description="Ordered black, received pink. Returned for refund.",
+            related_tickets=[],
+            order_id="order_legacy_phone_case",
+            refund_method="original_payment",
+            expected_refund_date=datetime(2026, 2, 10),
+            actual_refund_date=datetime(2026, 2, 8),
+            processed_by="employee_005",
+            notes="Routine color-mismatch refund.",
+            category="accessories",
+            subcategory="phone_cases",
+            warranty_covered=False,
+            return_shipping_required=True,
+            return_tracking_number="RET112233445",
+            created_at=datetime(2026, 2, 4, 11, 0, 0),
+            updated_at=datetime(2026, 2, 8, 14, 0, 0),
+        ),
     ]
     
     try:

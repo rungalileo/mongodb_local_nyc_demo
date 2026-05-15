@@ -103,10 +103,11 @@ need it.
 **Variables:**
 
 ```bash
-# Database connection string. The Agent Control server requires the
-# postgresql+psycopg:// scheme; Railway's stock DATABASE_URL uses bare
-# postgres:// which will fail at startup. Build the URL from the
-# individual PG* reference variables instead.
+# Database connection string. The Agent Control server's image ships with
+# psycopg3 (NOT psycopg2), and uses SQLAlchemy's async engine. Plain
+# postgresql:// makes SQLAlchemy default to psycopg2 -> ModuleNotFoundError
+# at startup. You MUST use the +psycopg suffix to force the psycopg3 driver.
+# Don't reference ${{Postgres.DATABASE_URL}} directly — it lacks the suffix.
 AGENT_CONTROL_DB_URL=postgresql+psycopg://${{Postgres.PGUSER}}:${{Postgres.PGPASSWORD}}@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}
 
 # Bind to all interfaces so Railway's edge proxy can reach the container.
@@ -199,10 +200,12 @@ Step 5 demonstrates runtime control of agent behavior without redeploying.
 
 ## Common pitfalls
 
-- **`postgres://` vs `postgresql+psycopg://` scheme.** Railway's
-  auto-generated `DATABASE_URL` uses the bare `postgres://` scheme. The
-  Agent Control server is built on SQLAlchemy + psycopg3 and will fail to
-  start with that scheme. Always build `AGENT_CONTROL_DB_URL` from the
+- **Postgres URL scheme — must include `+psycopg`.** The AC server image
+  ships with psycopg3 only, but SQLAlchemy's default for `postgresql://` is
+  psycopg2. Booting with the plain scheme (including Railway's stock
+  `DATABASE_URL`) crashes with `ModuleNotFoundError: No module named
+  'psycopg2'`. Always set `AGENT_CONTROL_DB_URL` to
+  `postgresql+psycopg://...` built from the
   individual `PG*` reference variables with the `postgresql+psycopg://`
   prefix, as shown in step 2.
 
