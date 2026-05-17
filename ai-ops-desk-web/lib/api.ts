@@ -47,6 +47,10 @@ export async function* streamChat(body: {
   user_query: string;
   user_id: string;
   toggles?: string[];
+  // Stable identifier for this chat conversation. Send the same value on
+  // every turn so Galileo records them under one session and metrics can
+  // correlate multi-turn flows (e.g. receipt then refund).
+  chat_session_id?: string;
 }): AsyncGenerator<StreamEvent> {
   const res = await fetch(`${BASE}/api/chat/stream`, {
     method: "POST",

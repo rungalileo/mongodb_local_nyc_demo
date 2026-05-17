@@ -62,11 +62,25 @@ def _attach_session_id(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-def _start_session(scenario: str) -> Optional[str]:
-    """Explicitly start a Galileo session so the ID is available even under
-    request-scoped event loops (e.g. FastAPI). Returns None if Galileo isn't
-    configured."""
+def _start_session(scenario: str, chat_session_id: Optional[str] = None) -> Optional[str]:
+    """Explicitly start (or resume) a Galileo session.
+
+    When ``chat_session_id`` is provided, we pass it as the Galileo session's
+    ``external_id``. The SDK's start_session will return the existing session
+    if one already exists for this external_id (see Logger.start_session),
+    which is exactly what we want for a chat conversation that spans many
+    backend requests: every turn in the same chat ends up under one Galileo
+    session, so metrics (e.g. refund-compliance) can correlate the receipt
+    request and the refund request that followed it.
+
+    Returns None if Galileo isn't configured.
+    """
     try:
+        if chat_session_id:
+            return galileo_context.start_session(
+                name=f"ops-desk:{scenario}",
+                external_id=chat_session_id,
+            )
         return galileo_context.start_session(name=f"ops-desk:{scenario}")
     except Exception:
         return None
@@ -77,10 +91,11 @@ async def run_query(
     user_id: str,
     toggles: Optional[List[str]] = None,
     scenario: str = "freeform",
+    chat_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the agent graph and return the final state."""
     _apply_toggles(toggles)
-    session_id = _start_session(scenario)
+    session_id = _start_session(scenario, chat_session_id)
     result = await _invoke_graph(_initial_state(user_query, user_id, scenario))
     if session_id and not result.get("galileo_session_id"):
         result["galileo_session_id"] = session_id
@@ -94,6 +109,7 @@ async def stream_query(
     user_id: str,
     toggles: Optional[List[str]] = None,
     scenario: str = "freeform",
+    chat_session_id: Optional[str] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     """
     Run the agent graph and yield events as each node completes.
@@ -104,7 +120,7 @@ async def stream_query(
       { "type": "error", "message": "..." }
     """
     _apply_toggles(toggles)
-    session_id = _start_session(scenario)
+    session_id = _start_session(scenario, chat_session_id)
     graph = await _get_graph()
     state = _initial_state(user_query, user_id, scenario)
 

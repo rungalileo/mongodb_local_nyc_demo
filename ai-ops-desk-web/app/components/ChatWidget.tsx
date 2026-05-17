@@ -54,6 +54,13 @@ export function ChatWidget({
   ]);
   const [busy, setBusy] = useState(false);
   const [liveAgents, setLiveAgents] = useState<AgentRow[] | null>(null);
+  // Per-chat identifier. Every turn in this chat uses the same value so the
+  // backend records them under one Galileo session. Reset on user switch.
+  const [chatSessionId, setChatSessionId] = useState<string>(() =>
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -64,7 +71,9 @@ export function ChatWidget({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefill]);
 
-  // Reset welcome message when identity changes (ops drawer user switch).
+  // Reset welcome message AND chat session id when identity changes (ops
+  // drawer user switch). A new customer = a fresh conversation, so the
+  // Galileo session should also be fresh.
   useEffect(() => {
     setTurns([
       {
@@ -75,6 +84,11 @@ export function ChatWidget({
     onAgentsChange(freshAgents());
     onResult(null);
     setLiveAgents(null);
+    setChatSessionId(
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `chat-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.userId]);
 
@@ -104,6 +118,7 @@ export function ChatWidget({
         user_query: q,
         user_id: me.userId,
         toggles: drift ? ["drift"] : [],
+        chat_session_id: chatSessionId,
       })) {
         lastAgents = applyEvent(lastAgents, ev);
         onAgentsChange(lastAgents);

@@ -42,6 +42,11 @@ class ChatRequest(BaseModel):
     user_query: str
     user_id: str
     toggles: Optional[List[str]] = None
+    # Stable per-chat identifier from the frontend. When present, every turn
+    # in the same chat is recorded under one Galileo session (via external_id),
+    # which lets session-level metrics (e.g. refund compliance) see the full
+    # conversation. Omit to get the legacy "one session per request" behavior.
+    chat_session_id: Optional[str] = None
 
 
 @app.get("/api/health")
@@ -78,6 +83,7 @@ async def chat(req: ChatRequest):
         user_query=req.user_query,
         user_id=req.user_id,
         toggles=req.toggles,
+        chat_session_id=req.chat_session_id,
     )
     return serialize_result(state)
 
@@ -92,6 +98,7 @@ async def chat_stream(req: ChatRequest):
                 user_query=req.user_query,
                 user_id=req.user_id,
                 toggles=req.toggles,
+                chat_session_id=req.chat_session_id,
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
