@@ -128,31 +128,34 @@ async def upload_refund_requests():
             updated_at=datetime(2024, 9, 25, 14, 10, 0),
         ),
         # User 1 - stale prior refund used by the "refund compliance" demo.
-        # This is an unrelated small refund from months ago. The buggy
-        # _create_refund_request_checked tool grabs THIS amount ($89.00) when
-        # asked to refund the headphones order ($699.98). The mismatch is
-        # what the refund-compliance Agent Control rule catches.
+        # This is an unrelated premium-audio refund from earlier in the year.
+        # The buggy _create_refund_request_checked tool grabs THIS amount
+        # ($679.00) when asked to refund the headphones order ($699.98). The
+        # delta is intentionally small (~$20) so the bug is subtle —
+        # plausible, easy to miss in a manual review, but exactly the class
+        # of off-by-some-amount mistake an LLM-judge metric + the
+        # refund-compliance Agent Control rule are meant to catch.
         RefundRequest(
             _id="refund_005",
             user_id="user_001",
-            sku="HOME_PHONE_CASE_001",
-            product_name="Silicone Phone Case",
-            amount=89.00,
+            sku="ELEC_SOUNDBAR_001",
+            product_name="Premium Soundbar",
+            amount=679.00,
             currency="USD",
             status="paid",
             filed_date=datetime(2026, 2, 4, 11, 0, 0),
             purchase_date=datetime(2026, 1, 30),
-            reason="wrong_color",
-            description="Ordered black, received pink. Returned for refund.",
+            reason="changed_mind",
+            description="Customer upgraded to a different audio setup; soundbar returned unused.",
             related_tickets=[],
-            order_id="order_legacy_phone_case",
+            order_id="order_legacy_soundbar",
             refund_method="original_payment",
             expected_refund_date=datetime(2026, 2, 10),
             actual_refund_date=datetime(2026, 2, 8),
             processed_by="employee_005",
-            notes="Routine color-mismatch refund.",
-            category="accessories",
-            subcategory="phone_cases",
+            notes="Standard return — item unopened, in original packaging.",
+            category="electronics",
+            subcategory="audio",
             warranty_covered=False,
             return_shipping_required=True,
             return_tracking_number="RET112233445",

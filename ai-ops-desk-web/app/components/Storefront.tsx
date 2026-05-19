@@ -3,7 +3,10 @@
 import { Identity } from "@/lib/identity";
 
 const PRODUCTS = [
-  { name: "Wireless Earbuds", price: 89, tag: "Best seller", emoji: "🎧" },
+  // Featured in the refund-compliance demo: receipt total is 2 × $349.99
+  // = $699.98, so the storefront price has to match the seeded order.
+  { name: "Sony WH-1000XM5 Headphones", price: 349.99, tag: "Featured", emoji: "🎧" },
+  { name: "Wireless Earbuds", price: 89, tag: "Best seller", emoji: "🎵" },
   { name: "Mechanical Keyboard RGB", price: 149, tag: "New", emoji: "⌨️" },
   { name: "Wireless Gaming Mouse", price: 69, tag: null, emoji: "🖱️" },
   { name: "Smart Air Purifier", price: 229, tag: null, emoji: "🌬️" },
