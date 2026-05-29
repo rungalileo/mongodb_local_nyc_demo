@@ -92,134 +92,135 @@ This demo showcases:
 
 ## Agent Control (runtime guardrails)
 
-The demo is wired up to [Agent Control](https://docs.agentcontrol.dev/) so you
-can attach server-side guardrails to specific tool calls without changing
-agent code.
+The demo supports **two Agent Control modes**, switchable via the
+`AGENT_CONTROL_MODE` env var:
 
-### Start the control plane (local dev, no auth)
+| Mode | When to use | Auth | Where controls live |
+|---|---|---|---|
+| `enterprise` *(default)* | Demoing against a Galileo cluster with ACE enabled | `GALILEO_API_KEY` via `Galileo-API-Key` header → JWT | Galileo Console, bound to a log stream |
+| `oss` | Demoing against a self-hosted Agent Control server (e.g. local Docker) | `AGENT_CONTROL_API_KEY` via SDK default header | Created by `setup_agent_control.py` against the server |
+
+Both modes share the same git-pinned `agent-control-sdk[galileo]` install,
+the same `@control()` decorators in `app/agents/action.py`, and the same
+two demo controls (`block-zero-refund`, `refund-compliance`). Only the
+init kwargs and the control-management flow differ.
+
+To switch:
 
 ```bash
-curl -L https://raw.githubusercontent.com/agentcontrol/agent-control/refs/heads/main/docker-compose.yml \
-  | docker compose -f - up -d
+# Enterprise (default)
+AGENT_CONTROL_MODE=enterprise
+
+# OSS / self-hosted
+AGENT_CONTROL_MODE=oss
 ```
 
-This brings up Postgres and the Agent Control server at
-`http://localhost:8000`. The dashboard UI is served by the same server
-container — open `http://localhost:8000` in a browser to access it.
+### Enterprise (ACE) mode
 
-### Pinned image version
+1. **Toggle Agent Control on.** Console → Dev Tools → External Flags →
+   search "Agent Control" → toggle on. A Controls icon appears in the
+   left nav.
+2. **Create the demo controls.** Console → Controls → Create New Control.
+   Create both:
+   - `block-zero-refund` — JSON evaluator on `output`, field constraint
+     `amount.min = 0.01`, action `deny`, scope `step_types=["llm"], stages=["post"]`.
+   - `refund-compliance` — JSON evaluator on `output`, field constraint
+     `amount_matches_receipt.enum = [true]`, action `deny`, scope
+     `step_types=["llm"], stages=["post"]`.
+3. **Bind both to your log stream.** Open the log stream you'll point
+   `GALILEO_LOG_STREAM` at, go to its Controls tab, and "Add" each control.
 
-For anything beyond casual local hacking — and for **all Railway / prod
-deploys** — pin the image version instead of `:latest`:
+### Local Galileo SDK pin
+
+The Agent Control → Galileo `ControlSpan` bridge is not yet on PyPI, so
+`requirements.txt` installs `galileo` from a local checkout:
 
 ```
-galileoai/agent-control-server:7.7.0
+galileo[openai] @ file:///Users/michaelbranconier/galileo/galileo-python
 ```
 
-`:latest` can roll forward without warning. Pinning is what guarantees the
-image you smoke-tested locally is bit-for-bit identical to what runs in prod.
+Update that path if your `galileo-python` checkout lives elsewhere. Switch
+back to the published `galileo[openai]>=…` once a release ships the bridge.
 
-### Test with auth locally (mirrors prod)
+### Environment variables
 
-Before deploying anywhere customers can see, exercise the auth-protected
-path on your laptop so a typo in env vars surfaces here, not on stage.
+ACE replaces the standalone server's `AGENT_CONTROL_API_KEY` /
+`AGENT_CONTROL_ADMIN_API_KEY` / `AGENT_CONTROL_SESSION_SECRET` /
+`AGENT_CONTROL_DB_URL` with these:
 
-Three secrets do the work. What each is for:
-
-| Value | What it does |
+| Var | What it's for |
 |---|---|
-| **API key** (`AGENT_CONTROL_API_KEY`) | Sent by the SDK on every `@control()` call. Lower-privilege — can evaluate controls but cannot create or modify them. |
-| **Admin key** (`AGENT_CONTROL_ADMIN_API_KEY`) | Used by `setup_agent_control.py` to create/attach controls, and by the dashboard at login. Never set on the long-running FastAPI process. |
-| **Session secret** (`AGENT_CONTROL_SESSION_SECRET`) | Server-side HMAC key the Agent Control server uses to sign UI login sessions. Used by the server only. |
+| `GALILEO_API_KEY` | Galileo API key. Doubles as the AC credential. |
+| `GALILEO_API_URL` / `GALILEO_CONSOLE_URL` | Stack URLs. The SDK uses them to resolve project / log stream IDs. |
+| `GALILEO_PROJECT` / `GALILEO_LOG_STREAM` | Names of the project + log stream you created above. |
+| `AGENT_CONTROL_URL` | ACE public URL on the same stack (e.g. `https://agent-control-<stack>.gcp-dev.galileo.ai`). |
+| `AGENT_CONTROL_TARGET_TYPE=log_stream` | ACE binds controls to log streams, not agents. |
+| `AGENT_CONTROL_RUNTIME_AUTH_MODE=jwt` | SDK exchanges your API key for a log-stream-scoped JWT per request. |
+| `AGENT_CONTROL_API_KEY_HEADER=Galileo-API-Key` | Header the upstream auth shim expects. |
+| `AGENT_CONTROL_REFRESH_INTERVAL_SECONDS=5` | How often the SDK polls ACE for control changes. |
 
-```bash
-# 1. Generate keys + secret. Export them so docker compose inherits them
-#    when we start the stack in step 2. Print them so you can copy the
-#    values into ai-ops-desk/.env in step 3.
-#
-#    Note: the SDK uses singular names (AGENT_CONTROL_API_KEY) and the
-#    server uses plural names (AGENT_CONTROL_API_KEYS). We export both.
-export AGENT_CONTROL_API_KEY=$(uuidgen)
-export AGENT_CONTROL_ADMIN_API_KEY=$(uuidgen)
-export AGENT_CONTROL_SESSION_SECRET=$(openssl rand -hex 32)
-
-export AGENT_CONTROL_API_KEY_ENABLED=true
-export AGENT_CONTROL_API_KEYS="$AGENT_CONTROL_API_KEY"
-export AGENT_CONTROL_ADMIN_API_KEYS="$AGENT_CONTROL_ADMIN_API_KEY"
-
-cat <<EOF
-─── Save these — you'll paste them into ai-ops-desk/.env below ───
-AGENT_CONTROL_API_KEY=$AGENT_CONTROL_API_KEY
-AGENT_CONTROL_ADMIN_API_KEY=$AGENT_CONTROL_ADMIN_API_KEY
-AGENT_CONTROL_SESSION_SECRET=$AGENT_CONTROL_SESSION_SECRET
-──────────────────────────────────────────────────────────────────
-EOF
-
-# 2. Stop any existing AC stack, then start a new one with auth ON.
-#    The official compose file pins container names (agent_control_postgres,
-#    agent_control_server), so we remove them by name. `docker compose down`
-#    won't work here because we never wrote the compose file to disk.
-docker rm -f agent_control_postgres agent_control_server 2>/dev/null
-curl -L https://raw.githubusercontent.com/agentcontrol/agent-control/refs/heads/main/docker-compose.yml \
-  | docker compose -f - up -d
-
-# 2a. Verify the env actually made it into the container (sanity check —
-#     this is the step that catches the "auth silently disabled" bug).
-docker exec agent_control_server env | grep -E "^AGENT_CONTROL_(API_KEY|ADMIN|SESSION)"
-# Expect: API_KEY_ENABLED=true, API_KEYS=<uuid>, ADMIN_API_KEYS=<uuid>,
-# SESSION_SECRET=<hex>. If any are empty, step 1's exports didn't take —
-# re-run them in the same shell and re-up.
-
-# 3. Add these two lines to ai-ops-desk/.env (paste the values printed in step 1):
-#      AGENT_CONTROL_API_KEY=<the first uuid>
-#      AGENT_CONTROL_ADMIN_API_KEY=<the second uuid>
-
-# 4. Re-run setup and the demo. Every request now carries X-API-Key under
-#    the hood; behavior should otherwise be identical to the no-auth run.
-python setup_agent_control.py
-python main.py --index 0
-
-# 5. Log into the dashboard at http://localhost:8000 with the admin key.
-```
-
-If the demo still blocks the $0 refund with auth on, you're prod-ready.
-
-### Register the agent + create the "block zero refund" control
+Copy `env.example` to `.env`, fill them in, then verify:
 
 ```bash
 python setup_agent_control.py
 ```
 
-This script:
-1. Registers an agent named `ai-ops-desk` with the server.
-2. Creates a control named `block-zero-refund` that uses the JSON evaluator
-   to deny any `_create_refund_request` tool call whose returned `amount`
-   is `0` (or missing).
-3. Associates the control with the agent.
-
-Re-running the script is idempotent — it will refresh the control definition
-in place.
+This does **not** create controls — it only verifies that the SDK can
+auth, registers/refreshes the `ai-ops-desk` agent against the resolved
+log stream target, and prints the controls bound to that log stream so
+you can confirm they made it across from Console.
 
 ### How it's wired
 
-- `app/agent_control_setup.py` lazily calls `agent_control.init()` the first
-  time the LangGraph workflow runs.
-- `app/agents/action.py` decorates `_create_refund_request` with `@control()`.
-  The SDK sends the tool's output to the server, the server evaluates the
-  JSON constraint `amount >= 0.01`, and a violation raises
-  `ControlViolationError` inside `_execute_tool`.
-- `_execute_tool` catches the violation and emits a `412` `ToolReceipt` so
-  the rest of the workflow (audit + customer reply) keeps running and you
-  can see exactly which control fired.
+- `app/agent_control_setup.py` calls `agent_control.init(target_type="log_stream", target_id=<resolved log_stream_id>, observability_sink_name="registered", api_key_header="Galileo-API-Key", runtime_auth_mode="jwt", …)` on first request.
+- `app/agents/action.py` decorates `_create_refund_request_checked` with
+  `@control()`. ACE evaluates the output against the bound controls and
+  raises `ControlViolationError` on a deny.
+- The `galileo` SDK's auto-registered Agent Control bridge converts
+  ACE's `ControlExecutionEvent`s into `ControlSpan`s on the active trace.
+  Hover the trace in Galileo Console — control evaluations appear inline
+  alongside the LLM and tool spans.
 
-To disable the integration entirely (e.g. for CI), set
-`AGENT_CONTROL_ENABLED=false` in your `.env`.
+Disable the integration entirely with `AGENT_CONTROL_ENABLED=false`.
+
+### OSS (self-hosted) mode
+
+Set `AGENT_CONTROL_MODE=oss` and point `AGENT_CONTROL_URL` at your
+standalone Agent Control server. For local dev:
+
+```bash
+curl -L https://raw.githubusercontent.com/agentcontrol/agent-control/refs/heads/main/docker-compose.yml \
+  | docker compose -f - up -d
+```
+
+This brings up Postgres + the AC server + the dashboard at
+`http://localhost:8000`. Then in `.env`:
+
+```bash
+AGENT_CONTROL_MODE=oss
+AGENT_CONTROL_URL=http://localhost:8000
+# Optional, only if the server runs with auth enabled:
+AGENT_CONTROL_API_KEY=<runtime key>
+AGENT_CONTROL_ADMIN_API_KEY=<admin key, used only by setup_agent_control.py>
+```
+
+Then create + attach the controls:
+
+```bash
+python setup_agent_control.py
+```
+
+In OSS mode the script PUTs both controls (`block-zero-refund`,
+`refund-compliance`) to `/api/v1/controls`, attaches each to the
+`ai-ops-desk` agent, and is idempotent on re-runs. Open the dashboard
+at `http://localhost:8000` to toggle controls live.
 
 ### Tweak or add controls
 
-Open the UI at `http://localhost:8000` to flip controls on/off, change the
-threshold, or add new ones (e.g. block refunds above some max). No code
-redeploy needed — the SDK refreshes its cache from the server.
+Open Galileo Console → Controls to flip controls on/off, edit thresholds,
+or add new ones (e.g. block refunds above some max). No code redeploy
+needed — the SDK refreshes its cache from ACE every
+`AGENT_CONTROL_REFRESH_INTERVAL_SECONDS` (default 5s).
 
 ## Troubleshooting
 

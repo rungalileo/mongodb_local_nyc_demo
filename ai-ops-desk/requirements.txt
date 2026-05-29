@@ -8,8 +8,24 @@ tqdm>=4.65.0
 httpx>=0.25.0
 uvloop>=0.17.0
 typing-extensions>=4.5.0
-galileo[openai]>=1.17.1
-agent-control-sdk>=0.1.0
+
+# --- Galileo + Agent Control Enterprise (ACE) ----------------------------------
+# The Agent Control -> Galileo ControlSpan bridge isn't on PyPI yet, so we
+# install Galileo pinned to a specific commit on the official repo. Bump the
+# SHA when you need a newer build. Switch to `galileo[openai]>=X.Y.Z` from
+# PyPI once the bridge is published.
+galileo[openai] @ git+https://github.com/rungalileo/galileo-python.git@627e90f8
+
+# Agent Control SDK pinned to the same commit ace-demo uses, with the
+# [galileo] extra so the Galileo logger sink is auto-registered.
+agent-control-sdk[galileo] @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=sdks/python
+agent-control-models @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=models
+agent-control-engine @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=engine
+agent-control-telemetry @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=telemetry
+agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/builtin
+agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/contrib/galileo
+# -------------------------------------------------------------------------------
+
 colorama>=0.4.6
 requests>=2.31.0
 fastapi>=0.110.0

@@ -315,11 +315,16 @@ class ActionAgent:
             )
         except Exception as e:
             latency = (time.time() - tool_start) * 1000
+            import traceback
+            print(
+                f"  {Fore.RED}✗ Tool {tool_name} raised {type(e).__name__}: {e}{Style.RESET_ALL}"
+            )
+            traceback.print_exc()
             return ToolReceipt(
                 tool=tool_name,
                 status=500,
                 latency_ms=latency,
-                response={"error": str(e)}
+                response={"error": str(e), "exception_type": type(e).__name__}
             )
 
     @log(span_type="tool", name="Create Refund Request")

@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
 """
-Register the AI Ops Desk agent with Agent Control and create a control that
-denies any refund whose returned amount is 0.
+Agent Control setup for the AI Ops Desk demo.
 
-Prerequisites:
-    1. Agent Control server running (default http://localhost:8000):
+Dispatches on the AGENT_CONTROL_MODE env var:
 
-        curl -L https://raw.githubusercontent.com/agentcontrol/agent-control/refs/heads/main/docker-compose.yml | docker compose -f - up -d
+  - enterprise (default): VERIFY-only. Controls live in Galileo Console.
+    This script:
+      * confirms the SDK can authenticate to ACE
+      * registers / refreshes the demo agent against the resolved log stream
+      * lists the controls bound to that log stream so you can sanity-check them
+    Console setup steps:
+      1. Console -> Dev Tools -> External Flags -> toggle "Agent Control" on.
+      2. Console -> Controls -> Create New Control. Create both:
+            - block-zero-refund      (deny on amount<0.01 in create_refund_request output)
+            - refund-compliance      (deny on amount_matches_receipt != true)
+      3. Open the log stream you set as GALILEO_LOG_STREAM, go to its Controls
+         tab, and "Add" each control so they're bound to that log stream.
 
-    2. SDK installed: pip install -r requirements.txt
+  - oss: CREATE-and-ATTACH. Talks to a self-hosted Agent Control server,
+    registers the demo agent, and upserts the two demo controls (block-zero-refund,
+    refund-compliance), attaching each to the agent. Idempotent.
 
 Usage:
     python setup_agent_control.py
@@ -19,37 +30,155 @@ load_dotenv()
 import asyncio
 import os
 import sys
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
-from agent_control import AgentControlClient
+import httpx
 
 
-# Hard-coded so a shell-level AGENT_CONTROL_AGENT_NAME (e.g. set for the
-# Cursor IDE hook at ~/.cursor/hooks/ac_evaluate.py, which defaults to
-# "cursor-agent") cannot accidentally redirect this demo's controls onto a
-# different agent.
-AGENT_NAME = "ai-ops-desk"
+AGENT_NAME = os.environ.get("AGENT_CONTROL_AGENT_NAME", "ai-ops-desk")
 AGENT_DESCRIPTION = "AI Ops Desk multi-agent customer support demo"
-SERVER_URL = os.getenv("AGENT_CONTROL_URL", "http://localhost:8000")
+SERVER_URL = os.environ.get("AGENT_CONTROL_URL", "").rstrip("/")
+TARGET_TYPE = os.environ.get("AGENT_CONTROL_TARGET_TYPE", "log_stream")
+API_KEY_HEADER = os.environ.get("AGENT_CONTROL_API_KEY_HEADER", "Galileo-API-Key")
+API_KEY = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
 
-# Creating/attaching controls is an admin-scoped operation on the AC server.
-# We deliberately read a separate ADMIN key here so this script can be run
-# against a prod server without leaking the admin credential into the
-# long-running SDK process (which only ever needs the lower-privilege
-# AGENT_CONTROL_API_KEY).
-ADMIN_API_KEY = (
-    os.getenv("AGENT_CONTROL_ADMIN_API_KEY")
-    # Fall back to the SDK key for local dev where auth is usually disabled
-    # and a single key (or none) is in use.
-    or os.getenv("AGENT_CONTROL_API_KEY")
-    or None
-)
+GALILEO_PROJECT = os.environ.get("GALILEO_PROJECT")
+GALILEO_LOG_STREAM = os.environ.get("GALILEO_LOG_STREAM")
 
-# Catalog of controls this script manages. Re-running is idempotent: if a
-# control already exists (409) we look up its id and PATCH the definition so
-# this file remains the source of truth.
-CONTROLS: dict[str, dict] = {
-    # 1. Defensive guardrail: never confirm a $0 refund.
+EXPECTED_CONTROLS = ("block-zero-refund", "refund-compliance")
+
+
+def _mode() -> str:
+    raw = os.environ.get("AGENT_CONTROL_MODE", "enterprise").strip().lower()
+    if raw in ("oss", "open-source", "open_source", "standalone", "self-hosted", "self_hosted"):
+        return "oss"
+    return "enterprise"
+
+
+def _bail(msg: str) -> int:
+    print(f"\033[31m✗ {msg}\033[0m")
+    return 1
+
+
+# =============================================================================
+# Enterprise (ACE) flow: verify only.
+# =============================================================================
+
+async def _resolve_log_stream() -> tuple[str | None, str | None]:
+    if not (GALILEO_PROJECT and GALILEO_LOG_STREAM):
+        print("Missing GALILEO_PROJECT or GALILEO_LOG_STREAM.")
+        return None, None
+    try:
+        from galileo.logger.logger import GalileoLogger
+    except ImportError as e:
+        print(f"galileo SDK is missing GalileoLogger ({e}).")
+        return None, None
+    gl = GalileoLogger(project=GALILEO_PROJECT, log_stream=GALILEO_LOG_STREAM)
+    return gl.project_id, gl.log_stream_id
+
+
+async def _ent_get(client: httpx.AsyncClient, path: str) -> httpx.Response:
+    return await client.get(path, headers={API_KEY_HEADER: API_KEY or ""})
+
+
+async def _ent_post(client: httpx.AsyncClient, path: str, json: dict) -> httpx.Response:
+    return await client.post(path, json=json, headers={API_KEY_HEADER: API_KEY or ""})
+
+
+async def _run_enterprise() -> int:
+    print(f"Mode:                 enterprise (ACE)")
+    print(f"Agent Control:        {SERVER_URL}")
+    print(f"Auth header:          {API_KEY_HEADER}={'set' if API_KEY else 'MISSING'}")
+    print(f"Galileo project:      {GALILEO_PROJECT}")
+    print(f"Galileo log stream:   {GALILEO_LOG_STREAM}")
+    print(f"Agent:                {AGENT_NAME}")
+    print()
+
+    if not SERVER_URL:
+        return _bail("AGENT_CONTROL_URL is not set.")
+    if not API_KEY:
+        return _bail("Neither AGENT_CONTROL_API_KEY nor GALILEO_API_KEY is set.")
+
+    project_id, log_stream_id = await _resolve_log_stream()
+    if not log_stream_id:
+        return _bail(
+            "Could not resolve Galileo log_stream_id. "
+            "Check GALILEO_API_URL / GALILEO_API_KEY / GALILEO_PROJECT / GALILEO_LOG_STREAM."
+        )
+    print(f"✓ Resolved project_id={project_id} log_stream_id={log_stream_id}")
+
+    async with httpx.AsyncClient(base_url=SERVER_URL, timeout=15.0) as client:
+        try:
+            health = await client.get("/health")
+            health.raise_for_status()
+            print(f"✓ AC server healthy: {health.json().get('status', 'unknown')}")
+        except Exception as e:  # noqa: BLE001
+            return _bail(f"AC /health failed: {e}")
+
+        try:
+            init_resp = await _ent_post(
+                client,
+                "/api/v1/agents/initAgent",
+                {
+                    "agent": {
+                        "agent_name": AGENT_NAME,
+                        "agent_description": AGENT_DESCRIPTION,
+                        "agent_created_at": datetime.now(UTC).isoformat(),
+                    },
+                    "steps": [],
+                    "target_type": TARGET_TYPE,
+                    "target_id": log_stream_id,
+                },
+            )
+            init_resp.raise_for_status()
+            created = init_resp.json().get("created", False)
+            print(f"✓ {'Created' if created else 'Found'} agent '{AGENT_NAME}' on ACE")
+        except Exception as e:  # noqa: BLE001
+            return _bail(f"initAgent failed: {e}")
+
+        try:
+            ctrl_resp = await _ent_get(
+                client, f"/api/v1/agents/{AGENT_NAME}/controls"
+            )
+            ctrl_resp.raise_for_status()
+            controls = ctrl_resp.json().get("controls", [])
+        except Exception as e:  # noqa: BLE001
+            return _bail(f"Listing controls failed: {e}")
+
+        print()
+        print(f"Controls bound to {TARGET_TYPE}:{log_stream_id}:")
+        if not controls:
+            print("  (none)")
+        for c in controls:
+            print(f"  - {c.get('name')} (id={c.get('id') or c.get('control_id')}, "
+                  f"enabled={c.get('enabled', '?')})")
+
+        bound_names = {c.get("name") for c in controls}
+        missing = [name for name in EXPECTED_CONTROLS if name not in bound_names]
+        if missing:
+            print()
+            print("\033[33m! Expected controls not bound to this log stream:\033[0m")
+            for name in missing:
+                print(f"    - {name}")
+            print(
+                "\n  Create them in Console -> Controls, then attach them to "
+                f"the '{GALILEO_LOG_STREAM}' log stream's Controls tab."
+            )
+            return 2
+
+    print("\nDone. Run a scenario to see the controls in action:")
+    print("  python main.py --index 0")
+    return 0
+
+
+# =============================================================================
+# OSS flow: register agent + upsert controls + attach controls to agent.
+# =============================================================================
+
+# Catalog of controls this script manages in OSS mode. Re-running is
+# idempotent: if a control already exists (409) we look up its id and PATCH
+# the definition so this file remains the source of truth.
+OSS_CONTROLS: dict[str, dict] = {
     "block-zero-refund": {
         "description": (
             "Block create_refund_request tool calls whose returned amount is 0. "
@@ -59,18 +188,12 @@ CONTROLS: dict[str, dict] = {
         ),
         "enabled": True,
         "execution": "server",
-        # Stage = post: evaluate the *output* of the wrapped function.
-        # step_types = ["llm"]: the @control() decorator auto-classifies
-        # plain async functions as llm steps. (Switch to ["tool"] if you
-        # wrap a framework tool object instead.)
         "scope": {"step_types": ["llm"], "stages": ["post"]},
         "condition": {
             "selector": {"path": "output"},
             "evaluator": {
                 "name": "json",
                 "config": {
-                    # JSON evaluator matches when constraints FAIL, which
-                    # then triggers the deny action below.
                     "field_constraints": {
                         "amount": {"min": 0.01},
                     },
@@ -80,11 +203,6 @@ CONTROLS: dict[str, dict] = {
         "action": {"decision": "deny"},
         "tags": ["refund", "tool-output", "ai-ops-desk"],
     },
-    # 2. Refund-compliance: the refund amount must match the receipt amount.
-    # The ai-ops-desk agent computes ``amount_matches_receipt`` on each
-    # create_refund_request output by comparing the refund amount to the
-    # underlying order's total. When the agent uses a stale or fallback
-    # amount, the boolean flips to False and this control denies the call.
     "refund-compliance": {
         "description": (
             "Refund amount must match the receipt total for the order being "
@@ -100,8 +218,6 @@ CONTROLS: dict[str, dict] = {
             "evaluator": {
                 "name": "json",
                 "config": {
-                    # enum=[True] -> any other value (False, missing) FAILS
-                    # the constraint, which is what triggers the deny.
                     "field_constraints": {
                         "amount_matches_receipt": {"enum": [True]},
                     },
@@ -114,7 +230,50 @@ CONTROLS: dict[str, dict] = {
 }
 
 
-async def _register_agent(client: AgentControlClient) -> None:
+async def _run_oss() -> int:
+    # OSS uses AGENT_CONTROL_ADMIN_API_KEY for control mgmt if set, else falls
+    # back to AGENT_CONTROL_API_KEY (auth disabled / single-key local dev).
+    admin_key = (
+        os.environ.get("AGENT_CONTROL_ADMIN_API_KEY")
+        or os.environ.get("AGENT_CONTROL_API_KEY")
+        or None
+    )
+
+    print(f"Mode:                 oss (self-hosted)")
+    print(f"Agent Control:        {SERVER_URL or 'http://localhost:8000'}")
+    print(f"Agent:                {AGENT_NAME}")
+    print(f"Admin API key:        {'set' if admin_key else 'not set (auth disabled)'}")
+    print(f"Controls:             {', '.join(OSS_CONTROLS.keys())}")
+    print()
+
+    server_url = SERVER_URL or "http://localhost:8000"
+
+    try:
+        from agent_control import AgentControlClient
+    except ImportError as e:
+        return _bail(f"agent_control SDK not installed: {e}")
+
+    async with AgentControlClient(base_url=server_url, api_key=admin_key) as client:
+        try:
+            health = await client.health_check()
+        except Exception as e:  # noqa: BLE001
+            return _bail(
+                f"Could not reach Agent Control server at {server_url}: {e}\n"
+                "  Start it with the docker-compose command from the README."
+            )
+        print(f"✓ Server healthy: {health.get('status', 'unknown')}\n")
+
+        await _oss_register_agent(client)
+        for name, definition in OSS_CONTROLS.items():
+            control_id = await _oss_upsert_control(client, name, definition)
+            await _oss_attach_control(client, name, control_id)
+
+    print("\nDone. Run a scenario to see the controls in action:")
+    print("  python main.py --index 0")
+    return 0
+
+
+async def _oss_register_agent(client) -> None:
     response = await client.http_client.post(
         "/api/v1/agents/initAgent",
         json={
@@ -131,8 +290,7 @@ async def _register_agent(client: AgentControlClient) -> None:
     print(f"{'✓ Created' if created else '✓ Found'} agent: {AGENT_NAME}")
 
 
-async def _upsert_control(client: AgentControlClient, name: str, definition: dict) -> int:
-    """Create the control or, if it already exists, refresh its definition."""
+async def _oss_upsert_control(client, name: str, definition: dict) -> int:
     create_response = await client.http_client.put(
         "/api/v1/controls",
         json={"name": name, "data": definition},
@@ -163,7 +321,7 @@ async def _upsert_control(client: AgentControlClient, name: str, definition: dic
     return control_id
 
 
-async def _attach_control(client: AgentControlClient, name: str, control_id: int) -> None:
+async def _oss_attach_control(client, name: str, control_id: int) -> None:
     response = await client.http_client.post(
         f"/api/v1/agents/{AGENT_NAME}/controls/{control_id}"
     )
@@ -173,30 +331,14 @@ async def _attach_control(client: AgentControlClient, name: str, control_id: int
     response.raise_for_status()
 
 
+# =============================================================================
+# Dispatch
+# =============================================================================
+
 async def main() -> int:
-    print(f"Agent Control server: {SERVER_URL}")
-    print(f"Agent name:           {AGENT_NAME}")
-    print(f"Controls:             {', '.join(CONTROLS.keys())}")
-    print(f"Admin API key:        {'set (' + ADMIN_API_KEY[:4] + '…)' if ADMIN_API_KEY else 'not set (auth disabled)'}")
-    print()
-
-    async with AgentControlClient(base_url=SERVER_URL, api_key=ADMIN_API_KEY) as client:
-        try:
-            health = await client.health_check()
-        except Exception as e:
-            print(f"✗ Could not reach Agent Control server at {SERVER_URL}: {e}")
-            print("  Start it with the docker-compose command from the README.")
-            return 1
-        print(f"✓ Server healthy: {health.get('status', 'unknown')}\n")
-
-        await _register_agent(client)
-        for name, definition in CONTROLS.items():
-            control_id = await _upsert_control(client, name, definition)
-            await _attach_control(client, name, control_id)
-
-    print("\nDone. Run a scenario to see the controls in action:")
-    print("  python main.py --index 0")
-    return 0
+    if _mode() == "oss":
+        return await _run_oss()
+    return await _run_enterprise()
 
 
 if __name__ == "__main__":

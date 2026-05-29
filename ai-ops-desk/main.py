@@ -6,7 +6,7 @@ A production-quality demo showcasing multi-agent AI with MongoDB Atlas RAG
 and Galileo SDK for observability, metrics, and guardrails.
 """
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 import argparse
 import asyncio

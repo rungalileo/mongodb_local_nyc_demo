@@ -9,7 +9,10 @@ import os
 from typing import List, Optional
 
 from dotenv import load_dotenv
-load_dotenv()
+# override=True so the .env file is authoritative even if the shell has
+# stale exports (e.g. AGENT_CONTROL_URL left over from a previous local
+# AC server run). Without this, exported shell vars silently shadow .env.
+load_dotenv(override=True)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +22,7 @@ from pydantic import BaseModel
 from app.runner import run_query, stream_query, serialize_result
 from app.scenarios import SCENARIOS
 from app.rag.atlas_client import get_atlas_client
+from app.agent_control_setup import init_agent_control, agent_control_status
 
 
 app = FastAPI(title="AI Operations Desk API")
@@ -52,6 +56,19 @@ class ChatRequest(BaseModel):
 @app.get("/api/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/api/agent_control/status")
+async def agent_control_status_endpoint():
+    """Debug snapshot of Agent Control init state.
+
+    Forces an init attempt if it hasn't run yet, then reports back what the
+    SDK looks like — whether it's wired up, what target it's bound to, and
+    any controls it has loaded. Use this when controls aren't showing up to
+    figure out whether init ran, failed, or succeeded-but-bound-nothing.
+    """
+    init_agent_control()
+    return agent_control_status()
 
 
 @app.get("/api/users")
