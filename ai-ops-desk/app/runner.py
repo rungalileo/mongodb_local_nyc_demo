@@ -47,11 +47,17 @@ def _apply_toggles(toggles_provided: Optional[List[str]]) -> ToggleManager:
     return toggles
 
 
-def _initial_state(user_query: str, user_id: str, scenario: str = "freeform") -> Dict[str, Any]:
+def _initial_state(
+    user_query: str,
+    user_id: str,
+    scenario: str = "freeform",
+    chat_session_id: Optional[str] = None,
+) -> Dict[str, Any]:
     return {
         "user_query": user_query,
         "user_id": user_id,
         "scenario": scenario,
+        "chat_session_id": chat_session_id,
     }
 
 
@@ -96,7 +102,7 @@ async def run_query(
     """Run the agent graph and return the final state."""
     _apply_toggles(toggles)
     session_id = _start_session(scenario, chat_session_id)
-    result = await _invoke_graph(_initial_state(user_query, user_id, scenario))
+    result = await _invoke_graph(_initial_state(user_query, user_id, scenario, chat_session_id))
     if session_id and not result.get("galileo_session_id"):
         result["galileo_session_id"] = session_id
     _attach_session_id(result)
@@ -122,7 +128,7 @@ async def stream_query(
     _apply_toggles(toggles)
     session_id = _start_session(scenario, chat_session_id)
     graph = await _get_graph()
-    state = _initial_state(user_query, user_id, scenario)
+    state = _initial_state(user_query, user_id, scenario, chat_session_id)
 
     # Manually open a parent workflow trace so each node @log span nests
     # under one trace instead of producing siblings. We can't use the @log

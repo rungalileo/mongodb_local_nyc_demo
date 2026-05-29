@@ -40,6 +40,14 @@ async def get_user_order(user_id: str, query: str) -> List[Dict[str, Any]]:
     return orders  # Already limited to 1 by vector search
 
 
+@log(span_type="workflow", name="Get Order By Id")
+async def get_order_by_id(user_id: str, order_id: str) -> List[Dict[str, Any]]:
+    """Fetch a specific order by id (used to anchor follow-up turns to the
+    same order surfaced earlier in the chat session)."""
+    client = get_atlas_client()
+    return await client.get_order_by_id(user_id, order_id)
+
+
 @log(span_type="workflow", name="Get Policy Context")
 async def get_policy_context(user_query: str, region: Optional[str] = None) -> Dict[str, Any]:
     """Get comprehensive policy context for a query"""

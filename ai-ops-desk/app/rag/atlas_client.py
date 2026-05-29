@@ -81,6 +81,19 @@ class AtlasClient:
         results = list(self.db.tickets.find(query))
         return results
     
+    @log(span_type="tool", name="Get Order By Id")
+    async def get_order_by_id(self, user_id: str, order_id: str) -> List[Dict[str, Any]]:
+        """Fetch a single order by its _id, scoped to user_id for safety.
+
+        Returns a list (matching get_user_orders' shape) so callers don't
+        have to special-case the return type. Empty list if not found.
+        """
+        result = self.db.orders.find_one({"_id": order_id, "user_id": user_id})
+        if not result:
+            return []
+        result.pop("embedding", None)
+        return [result]
+
     @log(span_type="tool", name="Get User Orders")
     async def get_user_orders(self, user_id: str, query_text: str = None) -> List[Dict[str, Any]]:
         """Get orders for a specific user, optionally using vector search for relevance"""

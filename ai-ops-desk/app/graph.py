@@ -35,6 +35,11 @@ class AgentState(dict):
     user_query: str
     user_id: str
     scenario: str
+    # Stable per-chat identifier. Used by RecordsAgent to anchor follow-up
+    # turns to the order surfaced earlier in the same chat session.
+    # MUST be annotated here -- LangGraph derives its state schema from the
+    # class annotations and drops unannotated keys from the input dict.
+    chat_session_id: Optional[str] = None
     
     # Agent outputs
     policy_output: Optional[PolicyOutput] = None
@@ -103,7 +108,11 @@ async def records_node(state: AgentState) -> AgentState:
 
     try:
         agent = RecordsAgent()
-        result = await agent.process(user_query=state["user_query"], user_id=state["user_id"])
+        result = await agent.process(
+            user_query=state["user_query"],
+            user_id=state["user_id"],
+            chat_session_id=state.get("chat_session_id"),
+        )
 
         state["records_output"] = result
         print(f"{Fore.GREEN}✓ Records Agent: Complete{Style.RESET_ALL}")
