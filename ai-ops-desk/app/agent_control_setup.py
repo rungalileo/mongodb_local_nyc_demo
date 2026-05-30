@@ -66,8 +66,8 @@ def _mode() -> str:
 def _resolve_ace_credentials() -> tuple[Optional[str], str]:
     """ACE uses GALILEO_API_KEY as the AC credential, sent in the
     `Galileo-API-Key` header by default."""
-    api_key = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
-    if api_key and "AGENT_CONTROL_API_KEY" not in os.environ:
+    api_key = os.environ.get("GALILEO_API_KEY") or os.environ.get("AGENT_CONTROL_API_KEY")
+    if api_key:
         os.environ["AGENT_CONTROL_API_KEY"] = api_key
     api_key_header = os.environ.get("AGENT_CONTROL_API_KEY_HEADER", "Galileo-API-Key")
     os.environ["AGENT_CONTROL_API_KEY_HEADER"] = api_key_header
