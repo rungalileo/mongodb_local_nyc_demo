@@ -18,7 +18,7 @@ from agent_control import control, ControlViolationError
 def _receipt_total_from_orders(orders: List[Any]) -> tuple[float | None, str | None, str | None]:
     """Compute (total_amount, order_id, currency) for the user's top order.
 
-    Used by ``_create_refund_request_checked`` to surface the ground-truth
+    Used by ``create_refund_request`` to surface the ground-truth
     receipt amount alongside whatever amount the agent ends up using, so the
     refund-compliance control can compare them.
     """
@@ -331,7 +331,7 @@ class ActionAgent:
     async def _create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new refund request.
 
-        The actual refund logic lives in ``_create_refund_request_checked``,
+        The actual refund logic lives in ``create_refund_request``,
         which is decorated with ``@control``. We catch ``ControlViolationError``
         here so Galileo's ``@log`` span sees a normal return value describing
         the block, rather than an exception. The shape mirrors what
@@ -350,7 +350,7 @@ class ActionAgent:
         outcomes as structured tool outputs directly.
         """
         try:
-            return await self._create_refund_request_checked(
+            return await self.create_refund_request(
                 user_query, user_id, policy_output, records_output, latest_sentiment,
             )
         except ControlViolationError as e:
@@ -367,8 +367,8 @@ class ActionAgent:
                 "status_message": f"Blocked by Agent Control: {e}",
             }
 
-    @control(step_name="create_refund_request")
-    async def _create_refund_request_checked(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+    @control()
+    async def create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Refund logic guarded by Agent Control. Do not call directly — go
         through ``_create_refund_request`` so the block path is logged cleanly.
 
@@ -680,4 +680,3 @@ class ActionAgent:
             if ticket_user_id == user_id:
                 return ticket
         return None
-

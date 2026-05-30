@@ -44,6 +44,9 @@ _init_error: Optional[Exception] = None
 _init_details: Dict[str, Any] = {}
 _lock = Lock()
 
+MANUAL_CONTROL_NAMES = ("refund-compliance-policy",)
+CONTROLLED_STEP_NAME = "create_refund_request"
+
 
 def _is_enabled() -> bool:
     return os.getenv("AGENT_CONTROL_ENABLED", "true").lower() not in ("0", "false", "no")
@@ -167,11 +170,12 @@ def _init_enterprise(agent_control) -> bool:
         return False
 
     refresh_interval = _refresh_interval()
+    registered_steps = _ensure_control_decorators_registered(agent_control)
 
     _say(
         f"initializing (enterprise): agent={agent_name} server={server_url} "
         f"target={target_type}:{log_stream_id} auth={runtime_auth_mode} "
-        f"refresh={refresh_interval}s"
+        f"refresh={refresh_interval}s registered_steps={len(registered_steps)}"
     )
 
     try:
@@ -203,6 +207,8 @@ def _init_enterprise(agent_control) -> bool:
             "project_id": project_id,
             "runtime_auth_mode": runtime_auth_mode,
             "refresh_interval_seconds": refresh_interval,
+            "registered_steps": registered_steps,
+            "expected_manual_controls": MANUAL_CONTROL_NAMES,
         }
         _say(f"✓ initialized (enterprise, target={target_type}:{log_stream_id})")
         return True
@@ -233,10 +239,12 @@ def _init_oss(agent_control) -> bool:
     server_url = os.environ.get("AGENT_CONTROL_URL", "http://localhost:8000")
     api_key = os.environ.get("AGENT_CONTROL_API_KEY") or None
     refresh_interval = _refresh_interval()
+    registered_steps = _ensure_control_decorators_registered(agent_control)
 
     _say(
         f"initializing (oss): agent={agent_name} server={server_url} "
-        f"api_key={'set' if api_key else 'unset'} refresh={refresh_interval}s"
+        f"api_key={'set' if api_key else 'unset'} refresh={refresh_interval}s "
+        f"registered_steps={len(registered_steps)}"
     )
 
     try:
@@ -255,6 +263,7 @@ def _init_oss(agent_control) -> bool:
             "agent_name": agent_name,
             "server_url": server_url,
             "refresh_interval_seconds": refresh_interval,
+            "registered_steps": registered_steps,
         }
         _say(f"✓ initialized (oss, server={server_url})")
         return True
@@ -279,12 +288,37 @@ def _refresh_interval() -> int:
         return 5
 
 
+def _ensure_control_decorators_registered(agent_control) -> list[dict[str, Any]]:
+    """Import modules with @control decorators before agent_control.init().
+
+    Agent Control auto-discovers steps from decorators at import time. The app
+    normally imports ``app.agents.action`` through the graph, but the status
+    endpoint can initialize Agent Control before the graph is built. Importing
+    the action module here keeps runtime registration decorator-driven, without
+    passing explicit ``steps`` to ``agent_control.init(...)``.
+    """
+    try:
+        import app.agents.action  # noqa: F401
+    except Exception as e:  # noqa: BLE001
+        _say(f"could not import control-decorated action module before init: {e}")
+
+    try:
+        get_registered_steps = getattr(agent_control, "get_registered_steps", None)
+        if callable(get_registered_steps):
+            return [dict(step) for step in get_registered_steps()]
+    except Exception as e:  # noqa: BLE001
+        _say(f"could not inspect registered @control steps: {e}")
+    return []
+
+
 def agent_control_status() -> Dict[str, Any]:
     """Snapshot of init state — exposed via /api/agent_control/status for debug."""
     info: Dict[str, Any] = {
         "initialized": _initialized,
         "enabled": _is_enabled(),
         "details": dict(_init_details),
+        "expected_manual_controls": list(MANUAL_CONTROL_NAMES),
+        "controlled_step_name": CONTROLLED_STEP_NAME,
     }
     if _init_error is not None:
         info["init_error"] = f"{type(_init_error).__name__}: {_init_error}"
@@ -318,7 +352,92 @@ def agent_control_status() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         info["controls_error"] = f"{type(e).__name__}: {e}"
 
+    if _mode() == "enterprise":
+        info["log_stream_bindings"] = _manual_log_stream_binding_status()
+
     return info
+
+
+def _manual_log_stream_binding_status() -> Dict[str, Any]:
+    """Best-effort status for manually-created Console controls.
+
+    This does not create, update, or attach controls. It only verifies that
+    the configured log stream has bindings and resolves bound control names so
+    the UI/API status endpoint can explain why controls are or are not active.
+    """
+    details = dict(_init_details)
+    server_url = details.get("server_url") or os.environ.get("AGENT_CONTROL_URL")
+    target_type = details.get("target_type") or os.environ.get("AGENT_CONTROL_TARGET_TYPE", "log_stream")
+    target_id = details.get("target_id")
+    api_key = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
+    api_key_header = os.environ.get("AGENT_CONTROL_API_KEY_HEADER", "Galileo-API-Key")
+
+    if not server_url or not target_id or not api_key:
+        return {
+            "status": "unavailable",
+            "reason": "missing server_url, target_id, or API key",
+            "target_type": target_type,
+            "target_id": target_id,
+        }
+
+    try:
+        import httpx
+
+        headers = {api_key_header: api_key}
+        bound_controls: list[dict[str, Any]] = []
+        with httpx.Client(base_url=server_url.rstrip("/"), timeout=10.0) as client:
+            binding_resp = client.get(
+                "/api/v1/control-bindings",
+                params={"target_type": target_type, "target_id": target_id, "limit": 100},
+                headers=headers,
+            )
+            binding_resp.raise_for_status()
+            bindings = binding_resp.json().get("bindings", [])
+
+            for binding in bindings:
+                control_id = binding.get("control_id")
+                control: dict[str, Any] = {
+                    "binding_id": binding.get("id"),
+                    "control_id": control_id,
+                    "binding_enabled": binding.get("enabled"),
+                }
+                if control_id is not None:
+                    control_resp = client.get(f"/api/v1/controls/{control_id}", headers=headers)
+                    control_resp.raise_for_status()
+                    payload = control_resp.json()
+                    data = payload.get("data") or {}
+                    scope = data.get("scope") or {}
+                    action = data.get("action") or {}
+                    control.update(
+                        {
+                            "name": payload.get("name"),
+                            "enabled": data.get("enabled", payload.get("enabled")),
+                            "action": action.get("decision"),
+                            "step_types": scope.get("step_types"),
+                            "step_names": scope.get("step_names"),
+                            "step_name_regex": scope.get("step_name_regex"),
+                            "stages": scope.get("stages"),
+                        }
+                    )
+                bound_controls.append(control)
+
+        bound_names = {c.get("name") for c in bound_controls}
+        missing = [name for name in MANUAL_CONTROL_NAMES if name not in bound_names]
+        return {
+            "status": "ok" if not missing else "missing_expected_controls",
+            "target_type": target_type,
+            "target_id": target_id,
+            "expected_controls": list(MANUAL_CONTROL_NAMES),
+            "missing_expected_controls": missing,
+            "controls": bound_controls,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "error",
+            "target_type": target_type,
+            "target_id": target_id,
+            "error": f"{type(e).__name__}: {e}",
+        }
 
 
 async def shutdown_agent_control() -> None:
