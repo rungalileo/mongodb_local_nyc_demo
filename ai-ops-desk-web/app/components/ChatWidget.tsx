@@ -99,8 +99,8 @@ export function ChatWidget({
     });
   }, [turns, busy, liveAgents]);
 
-  async function send() {
-    const q = input.trim();
+  async function send(overrideText?: string) {
+    const q = (overrideText ?? input).trim();
     if (!q || busy) return;
     setInput("");
     setTurns((t) => [...t, { role: "user", text: q }]);
@@ -208,29 +208,47 @@ export function ChatWidget({
             e.preventDefault();
             send();
           }}
-          className="border-t border-zinc-200 dark:border-zinc-800 p-4 flex items-end gap-2 shrink-0 bg-white dark:bg-zinc-950"
+          className="border-t border-zinc-200 dark:border-zinc-800 p-4 shrink-0 bg-white dark:bg-zinc-950"
         >
-          <textarea
-            rows={1}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            placeholder="Type your message…"
-            disabled={busy}
-            className="flex-1 resize-none rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 max-h-32 disabled:opacity-60"
-          />
-          <button
-            type="submit"
-            disabled={busy || !input.trim()}
-            className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-40 transition-colors"
-          >
-            Send
-          </button>
+          <div className="flex flex-wrap gap-2 mb-2">
+            {[
+              "Can I get the receipt for my bluetooth headphones?",
+              "Can you issue me a refund?",
+            ].map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => send(suggestion)}
+                disabled={busy}
+                className="rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-end gap-2">
+            <textarea
+              rows={1}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              placeholder="Type your message…"
+              disabled={busy}
+              className="flex-1 resize-none rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 max-h-32 disabled:opacity-60"
+            />
+            <button
+              type="submit"
+              disabled={busy || !input.trim()}
+              className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-40 transition-colors"
+            >
+              Send
+            </button>
+          </div>
         </form>
       </aside>
     </>
