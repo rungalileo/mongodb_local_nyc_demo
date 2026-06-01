@@ -115,6 +115,41 @@ class ActionAgent:
                 tool_receipts.append(receipt.dict())
                 total_cost += self._calculate_tool_cost(tool_name)
 
+                # Refund-compliance demo: when create_refund_request is blocked
+                # by the control AND we have the receipt's ground-truth amount,
+                # synthesize a follow-up "corrected" refund receipt so the UI
+                # shows the "Refund issued" chip with the right amount. The
+                # narrative: control caught the wrong amount, system retried
+                # with the receipt total. The blocked receipt stays in the
+                # list so the audit trail / Galileo trace still shows the
+                # original (wrong) attempt and the deny event.
+                if (
+                    tool_name == "create_refund_request"
+                    and receipt.status == 412
+                    and (receipt.response or {}).get("error") == "blocked_by_agent_control"
+                ):
+                    blocked_response = receipt.response or {}
+                    if blocked_response.get("receipt_amount") is not None:
+                        corrected_start = time.time()
+                        corrected_response = await self._issue_refund_at_receipt_amount(
+                            user_query, user_id, blocked_response,
+                        )
+                        corrected_latency = (time.time() - corrected_start) * 1000
+                        print(
+                            f"  {Fore.GREEN}↩ Re-issued refund at receipt amount "
+                            f"{corrected_response.get('currency')} "
+                            f"{corrected_response.get('amount')} (control-corrected)"
+                            f"{Style.RESET_ALL}"
+                        )
+                        corrected_receipt = ToolReceipt(
+                            tool="create_refund_request",
+                            status=corrected_response.get("status", 201),
+                            latency_ms=corrected_latency,
+                            response=corrected_response,
+                        )
+                        tool_receipts.append(corrected_receipt.dict())
+                        total_cost += self._calculate_tool_cost("create_refund_request")
+
         resolution = self._determine_resolution([ToolReceipt(**r) for r in tool_receipts], records_output)
         print(f"  {Fore.YELLOW}Final resolution: {resolution}{Style.RESET_ALL}")
         
@@ -385,6 +420,53 @@ class ActionAgent:
                 "currency": receipt_currency or "USD",
                 "product_name": product_name,
             }
+
+    @log(span_type="tool", name="Issue Refund (Corrected)")
+    async def _issue_refund_at_receipt_amount(
+        self,
+        user_query: str,
+        user_id: str,
+        blocked_response: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Real follow-up refund call invoked when the primary
+        ``create_refund_request`` is blocked by the refund-compliance control.
+
+        Notes:
+        - Intentionally NOT decorated with ``@control``: this is the
+          remediation path that runs after the control has already vetted
+          the receipt amount. Re-evaluating would just deny again because
+          the same control logic is keyed on the prior call's metadata.
+        - Decorated with ``@log`` so the Galileo trace shows a distinct
+          "Issue Refund (Corrected)" span next to the denied
+          "Create Refund Request" span — the audit trail tells the full
+          remediation story.
+        - In production this would also persist to the refund collection;
+          for the demo we simulate latency and return the structured
+          receipt payload that the frontend chip + synthesizer key off of.
+        """
+        time.sleep(random.uniform(0.05, 0.15))
+
+        receipt_amount = blocked_response.get("receipt_amount")
+        currency = blocked_response.get("currency") or "USD"
+        order_id = blocked_response.get("receipt_order_id")
+        product_name = blocked_response.get("product_name")
+
+        return {
+            "status": 201,
+            "refund_request_id": f"RR_{random.randint(10000, 99999)}",
+            "user_id": user_id,
+            "amount": receipt_amount,
+            "currency": currency,
+            "description": user_query[:200],
+            "refund_status": "approved",
+            "status_message": "Refund issued at receipt amount (control-corrected)",
+            "receipt_amount": receipt_amount,
+            "receipt_order_id": order_id,
+            "product_name": product_name,
+            "amount_matches_receipt": True,
+            "control_corrected": True,
+            "original_blocked_by": blocked_response.get("control_name"),
+        }
 
     @control()
     async def create_refund_request(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
