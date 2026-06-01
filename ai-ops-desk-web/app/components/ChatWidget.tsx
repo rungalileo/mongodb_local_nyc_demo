@@ -258,6 +258,7 @@ export function ChatWidget({
 function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
   const isUser = turn.role === "user";
   const chips = turn.result ? actionChips(turn.result.actions) : [];
+  const receipt = !isUser && turn.result ? findReceipt(turn.result.actions) : null;
   return (
     <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && <Avatar kind="bot" />}
@@ -271,6 +272,7 @@ function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
         >
           {turn.text}
         </div>
+        {receipt && <ReceiptCard receipt={receipt} />}
         {chips.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {chips.map((c, i) => (
@@ -286,6 +288,143 @@ function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
         )}
       </div>
       {isUser && <Avatar kind="user" me={me} />}
+    </div>
+  );
+}
+
+type ReceiptShape = {
+  product_name?: string;
+  sku?: string;
+  quantity?: number;
+  unit_price?: number;
+  total_amount?: number;
+  currency?: string;
+  order_id?: string;
+  order_date?: string;
+  order_status?: string;
+  shipping_address?: {
+    street?: string;
+    city?: string;
+    state?: string;
+    postal_code?: string;
+    country?: string;
+  };
+};
+
+function findReceipt(actions: ChatResult["actions"]): ReceiptShape | null {
+  if (!actions) return null;
+  const hit = actions.find(
+    (a) => a.tool === "get_receipt" && a.ok && a.response && typeof a.response === "object",
+  );
+  return hit ? (hit.response as ReceiptShape) : null;
+}
+
+function formatMoney(amount: number | undefined, currency: string | undefined) {
+  if (amount === undefined || amount === null) return "—";
+  const code = currency || "USD";
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: code }).format(amount);
+  } catch {
+    return `${code} ${amount.toFixed(2)}`;
+  }
+}
+
+function formatDate(value: string | undefined) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function ReceiptCard({ receipt }: { receipt: ReceiptShape }) {
+  const subtotal =
+    receipt.unit_price !== undefined && receipt.quantity !== undefined
+      ? receipt.unit_price * receipt.quantity
+      : receipt.total_amount;
+  const addr = receipt.shipping_address || {};
+  const addressLine1 = addr.street;
+  const addressLine2 = [addr.city, addr.state, addr.postal_code].filter(Boolean).join(", ");
+  const addressLine3 = addr.country;
+
+  return (
+    <div className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-gradient-to-r from-indigo-50 to-violet-50 dark:from-indigo-950/40 dark:to-violet-950/40">
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-medium">
+            Order receipt
+          </div>
+          <div className="font-mono text-sm text-zinc-900 dark:text-zinc-100 mt-0.5">
+            {receipt.order_id || "—"}
+          </div>
+        </div>
+        {receipt.order_status && (
+          <span className="inline-flex items-center text-[11px] uppercase tracking-wider rounded-full px-2.5 py-1 bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-medium">
+            {receipt.order_status}
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-3.5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[15px] font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+              {receipt.product_name || "Item"}
+            </div>
+            {receipt.sku && (
+              <div className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 mt-0.5">
+                {receipt.sku}
+              </div>
+            )}
+          </div>
+          <div className="text-right shrink-0">
+            <div className="text-sm text-zinc-900 dark:text-zinc-100">
+              {formatMoney(receipt.unit_price, receipt.currency)}
+            </div>
+            <div className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-0.5">
+              × {receipt.quantity ?? 1}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-4 pb-3 border-b border-dashed border-zinc-200 dark:border-zinc-700">
+        <div className="flex items-center justify-between text-[13px] text-zinc-600 dark:text-zinc-400">
+          <span>Subtotal</span>
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">
+            {formatMoney(subtotal, receipt.currency)}
+          </span>
+        </div>
+      </div>
+
+      <div className="px-4 py-3 flex items-center justify-between">
+        <span className="text-[13px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-medium">
+          Total paid
+        </span>
+        <span className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+          {formatMoney(receipt.total_amount, receipt.currency)}
+        </span>
+      </div>
+
+      <div className="px-4 py-3 border-t border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-950/40 grid grid-cols-2 gap-x-4 gap-y-2 text-[12px]">
+        <div>
+          <div className="uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-0.5">
+            Purchased
+          </div>
+          <div className="text-zinc-800 dark:text-zinc-200">{formatDate(receipt.order_date)}</div>
+        </div>
+        {(addressLine1 || addressLine2) && (
+          <div>
+            <div className="uppercase tracking-wider text-zinc-500 dark:text-zinc-400 mb-0.5">
+              Ship to
+            </div>
+            <div className="text-zinc-800 dark:text-zinc-200 leading-tight">
+              {addressLine1 && <div>{addressLine1}</div>}
+              {addressLine2 && <div>{addressLine2}</div>}
+              {addressLine3 && <div>{addressLine3}</div>}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

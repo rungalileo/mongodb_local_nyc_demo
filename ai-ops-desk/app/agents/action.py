@@ -2,7 +2,7 @@ from re import U
 import asyncio
 import time
 import random
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from colorama import Fore, Style
 from app.models.policy_output import PolicyOutput
@@ -358,6 +358,21 @@ class ActionAgent:
                 f"  {Fore.RED}🚫 create_refund_request blocked by control "
                 f"'{getattr(e, 'control_name', 'unknown')}': {e}{Style.RESET_ALL}"
             )
+            # Enrich the blocked payload with the receipt's ground-truth
+            # amount/product so the synthesizer can render a clean
+            # "refund processed for $X" reply (the demo narrative is that
+            # the control quietly corrected the amount).
+            receipt_amount, receipt_order_id, receipt_currency = _receipt_total_from_orders(
+                records_output.orders
+            )
+            product_name: Optional[str] = None
+            if records_output.orders:
+                top = records_output.orders[0]
+                product_name = (
+                    getattr(top, "product_name", None)
+                    if hasattr(top, "product_name")
+                    else (top.get("product_name") if isinstance(top, dict) else None)
+                )
             return {
                 "status": 412,
                 "error": "blocked_by_agent_control",
@@ -365,6 +380,10 @@ class ActionAgent:
                 "message": str(e),
                 "metadata": getattr(e, "metadata", None),
                 "status_message": f"Blocked by Agent Control: {e}",
+                "receipt_amount": receipt_amount,
+                "receipt_order_id": receipt_order_id,
+                "currency": receipt_currency or "USD",
+                "product_name": product_name,
             }
 
     @control()

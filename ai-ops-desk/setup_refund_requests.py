@@ -140,7 +140,7 @@ async def upload_refund_requests():
             user_id="user_001",
             sku="ELEC_SOUNDBAR_001",
             product_name="Premium Soundbar",
-            amount=679.00,
+            amount=1500.00,
             currency="USD",
             status="paid",
             filed_date=datetime(2026, 2, 4, 11, 0, 0),
