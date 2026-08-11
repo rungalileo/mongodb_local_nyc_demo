@@ -73,6 +73,24 @@ async def get_policy_context(user_query: str, region: Optional[str] = None) -> D
     return context
 
 
+@log(span_type="workflow", name="Find Catalog Product")
+async def find_catalog_product(query_text: str) -> Optional[Dict[str, Any]]:
+    """Resolve a natural-language query to a single catalog product."""
+    client = get_atlas_client()
+    return await client.find_product(query_text)
+
+
+@log(span_type="workflow", name="Get Product Promotions")
+async def get_product_promotions(sku: str) -> List[Dict[str, Any]]:
+    """Fetch promos for a SKU from the (stale) promo store.
+
+    Returns promos WITHOUT filtering on effective_until, mirroring the stale
+    cache the demo is built around.
+    """
+    client = get_atlas_client()
+    return await client.get_promos_for_sku(sku)
+
+
 @log(span_type="workflow", name="Create Audit Record")
 async def create_audit_record(audit_data: Dict[str, Any]) -> bool:
     """Create an audit record"""

@@ -2,6 +2,7 @@ from re import U
 import asyncio
 import time
 import random
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from colorama import Fore, Style
@@ -10,9 +11,12 @@ from app.models.records_output import RecordsOutput
 from app.models.action_output import ActionOutput, ToolReceipt
 from app.models.order import Order
 from app.toggles import ToggleManager
+from app.promo_spike import discount_for_now
+from app.rag.queries import find_catalog_product, get_product_promotions
+from app.session_cache import recall_promo, remember_promo, clear_promo
 from galileo import log
 
-from agent_control import control, ControlViolationError
+from agent_control import control, ControlViolationError, ControlSteerError
 
 
 def _receipt_total_from_orders(orders: List[Any]) -> tuple[float | None, str | None, str | None]:
@@ -43,13 +47,67 @@ def _receipt_total_from_orders(orders: List[Any]) -> tuple[float | None, str | N
 INTENT_REFUND_REQUEST = "refund_request"
 INTENT_ORDER_INQUIRY = "order_inquiry"
 INTENT_RECEIPT_REQUEST = "receipt_request"
+INTENT_PROMO_INQUIRY = "promo_inquiry"
 INTENT_GENERAL = "general"
 VALID_INTENTS = [
     INTENT_REFUND_REQUEST,
     INTENT_ORDER_INQUIRY,
     INTENT_RECEIPT_REQUEST,
+    INTENT_PROMO_INQUIRY,
     INTENT_GENERAL,
 ]
+
+# Affirmations that, when a promo is already on the table (proposed on the
+# previous turn), mean "yes, apply that discount." Kept keyword-based rather
+# than LLM-classified because a bare "yes" carries no product signal for the
+# intent classifier — the pending-promo context is what disambiguates it.
+_AFFIRMATIVE_PREFIXES = (
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go ahead", "go for it",
+    "do it", "please do", "apply", "add it", "add to", "sounds good",
+    "confirm", "absolutely", "let's do", "lets do", "y ",
+)
+
+# Verbs that mean the customer wants the promo applied *now*, in the same
+# message they asked about it (single-turn). Used both by power users and by
+# the traffic generator's single-shot scenarios.
+_APPLY_NOW_KEYWORDS = (
+    "apply", "add it", "add to cart", "add to my cart", "go ahead", "add the tv",
+    "add the laptop", "put it in", "check out", "checkout",
+)
+
+
+def _is_affirmative(text: str) -> bool:
+    t = (text or "").strip().lower().rstrip(".!,")
+    if not t:
+        return False
+    if t in {"y", "yes", "yep", "yeah", "yup", "ok", "okay", "sure"}:
+        return True
+    return any(t.startswith(prefix) for prefix in _AFFIRMATIVE_PREFIXES)
+
+
+def _wants_apply_now(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _APPLY_NOW_KEYWORDS)
+
+
+# Declines that, when a promo is on the table, mean "no, don't apply it." Used
+# by the "No thanks" quick-reply chip so the agent bows out gracefully (clears
+# the pending offer, no ticket) instead of falling through to generic handling.
+_DECLINE_PREFIXES = (
+    "no thanks", "no thank you", "no", "nope", "nah", "not now", "not right now",
+    "maybe later", "don't", "dont", "do not", "pass", "skip", "cancel",
+    "no thanks!", "leave it",
+)
+
+
+def _is_decline(text: str) -> bool:
+    t = (text or "").strip().lower().rstrip(".!,")
+    if not t:
+        return False
+    if t in {"n", "no", "nope", "nah", "pass", "skip", "cancel"}:
+        return True
+    return any(t.startswith(prefix) for prefix in _DECLINE_PREFIXES)
+
 
 # Sentiment classification constants
 SENTIMENT_NEGATIVE = "negative"
@@ -73,18 +131,43 @@ class ActionAgent:
             "explain_refund_state": self._explain_refund_state,
             "explain_order_state": self._explain_order_state,
             "get_receipt": self._get_receipt,
+            "check_promotions": self._check_promotions,
+            "apply_discount": self._apply_discount,
         }
         self.toggles = ToggleManager()
+        # Set per-request in process(); tools read it for the two-turn promo flow.
+        self._chat_session_id: Optional[str] = None
     
     @log(span_type="agent", name="Process")
     async def process(self, 
                     user_id: str, 
                     user_query: str, 
                     policy_output: PolicyOutput, 
-                    records_output: RecordsOutput) -> ActionOutput:
+                    records_output: RecordsOutput,
+                    chat_session_id: Optional[str] = None,
+                    intent: Optional[str] = None) -> ActionOutput:
 
-        tickets = records_output.tickets
-        requests = records_output.requests
+        # Anchor the two-turn promo flow to this chat session so the tools can
+        # recall/remember the "promo in focus" across turns. None for the CLI /
+        # traffic generator, which intentionally falls back to the spike schedule.
+        self._chat_session_id = chat_session_id
+
+        # "No thanks" on a pending promo: bow out cleanly — drop the offer and
+        # return a decline resolution with no tools (no ticket, no LLM calls).
+        # The synthesizer renders a polite decline for this resolution.
+        if recall_promo(self._chat_session_id) and _is_decline(user_query):
+            print(f"  {Fore.YELLOW}Customer declined the pending promo -> clearing offer{Style.RESET_ALL}")
+            clear_promo(self._chat_session_id)
+            return ActionOutput(
+                resolution="promo_declined",
+                tool_receipts=[],
+                cost_token_usd=0.0,
+            )
+
+        # Records/Policy are skipped for the promo path (see the graph router),
+        # so tolerate their outputs being None. The promo tools don't read them.
+        tickets = records_output.tickets if records_output else []
+        requests = records_output.requests if records_output else []
         # import pdb;pdb.set_trace()
         # Determine which tools to call
         # Extract existing sentiment from relevant tickets
@@ -99,8 +182,11 @@ class ActionAgent:
         # latest_sentiment = await self._classify_sentiment_v2(user_query)
         print(f"  {Fore.YELLOW}Detected sentiment: {latest_sentiment}{Style.RESET_ALL}")
 
-        print(f"  {Fore.YELLOW}Classifying intent via LLM...{Style.RESET_ALL}")
-        tools_to_call = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment)
+        if intent is None:
+            print(f"  {Fore.YELLOW}Classifying intent via LLM...{Style.RESET_ALL}")
+        else:
+            print(f"  {Fore.YELLOW}Using intent from router: {intent}{Style.RESET_ALL}")
+        tools_to_call = await self._determine_tools(user_query, user_id, policy_output, records_output, latest_sentiment, precomputed_intent=intent)
         print(f"  {Fore.YELLOW}Tools to execute: {', '.join(tools_to_call)}{Style.RESET_ALL}")
 
         tool_receipts: List[Dict[str, Any]] = []
@@ -159,19 +245,68 @@ class ActionAgent:
             cost_token_usd=total_cost,
         )
     
+    @log(span_type="agent", name="Classify Route")
+    async def classify_route(self, user_query: str, chat_session_id: Optional[str]) -> tuple[str, str]:
+        """Decide the graph route (``"promo"`` vs ``"support"``) and return the
+        classified intent alongside it.
+
+        Lets the graph skip the Records/Policy agents (and their irrelevant tool
+        calls) for the promo demo while leaving the refund/order/receipt path
+        untouched. The intent is threaded into ``process`` so it isn't
+        re-classified downstream.
+
+        Turn 2 of the two-turn promo flow ("yes") has no promo keywords, so the
+        pending-promo check (same rule ``_determine_tools`` uses) routes it to
+        the promo path before falling back to the LLM classifier.
+        """
+        self._chat_session_id = chat_session_id
+        pending_promo = recall_promo(chat_session_id)
+        # Turn 2 "yes"/"apply" or "no thanks" both stay on the lean promo path
+        # (no records/policy) so accepting or declining the offer is clean.
+        if pending_promo and (_is_affirmative(user_query) or _is_decline(user_query)):
+            return "promo", INTENT_PROMO_INQUIRY
+
+        intent = await self._classify_intent(user_query, {"policy": None, "records": None})
+        route = "promo" if intent == INTENT_PROMO_INQUIRY else "support"
+        return route, intent
+
     @log(span_type="agent", name="Determine Tools")
     async def _determine_tools(self, 
                             user_query: str, 
                             user_id: str, 
                             policy_output: PolicyOutput, 
                             records_output: RecordsOutput, 
-                            latest_sentiment: str) -> List[str]:
+                            latest_sentiment: str,
+                            precomputed_intent: Optional[str] = None) -> List[str]:
         """Determine which tools to call based on context"""
         tools = []
-        intent = await self._classify_intent(
+
+        # --- Two-turn promo flow -------------------------------------------
+        # Turn 2: a promo was proposed last turn (pending in the session) and
+        # the customer just said "yes" / "apply it". Skip re-checking and go
+        # straight to applying the exact offer we put on the table. Kept ahead
+        # of intent classification because a bare "yes" has no promo signal.
+        pending_promo = recall_promo(self._chat_session_id)
+        if pending_promo and _is_affirmative(user_query):
+            print(f"  {Fore.YELLOW}Pending promo confirmed by customer -> apply_discount{Style.RESET_ALL}")
+            return ["apply_discount"]
+
+        # Reuse the router's classification when provided so we don't spend a
+        # second LLM call (and second "Classify Intent" span) per turn.
+        intent = precomputed_intent if precomputed_intent is not None else await self._classify_intent(
             user_query, 
             {"policy": policy_output, "records": records_output}
         )
+
+        # Turn 1 (or single-turn): customer is shopping for a deal. Propose the
+        # promo (check only) and wait for confirmation. If they explicitly asked
+        # to apply it in the same breath ("...and add it to my cart"), do both
+        # now. The traffic generator hits this single-turn path.
+        if intent == INTENT_PROMO_INQUIRY:
+            if _wants_apply_now(user_query):
+                return ["check_promotions", "apply_discount"]
+            return ["check_promotions"]
+
         existing_ticket = self._find_existing_ticket(records_output.tickets, user_id)
         
         # Create or update ticket for any request
@@ -209,16 +344,18 @@ class ActionAgent:
         - {INTENT_REFUND_REQUEST}: Customer wants a refund, return, or money back
         - {INTENT_ORDER_INQUIRY}: Customer asking about order status, delivery, shipping
         - {INTENT_RECEIPT_REQUEST}: Customer wants to see the receipt, invoice, or purchase details for an order (e.g. "show me the receipt", "what did I pay", "send me the invoice", "show purchase details")
+        - {INTENT_PROMO_INQUIRY}: Customer is asking whether a discount, deal, promo, coupon, or sale is available on an item they want to buy, and/or wants that discount applied (e.g. "is there a discount on the OLED TV?", "any promo running on the laptop?", "apply the deal and add it to my cart")
         - {INTENT_GENERAL}: Any other customer service request
 
         Important rules:
         - If the customer is explicitly asking to return, refund, or get money back for a product, classify as {INTENT_REFUND_REQUEST} — even when other unrelated prior refund records exist in their history.
         - Only classify as {INTENT_ORDER_INQUIRY} when a refund request already exists for the SAME product the customer is asking about right now (same product name / SKU). Prior refunds for *different* products do not count.
+        - Classify as {INTENT_PROMO_INQUIRY} when the customer is shopping and asks about a discount/promo/deal/sale/coupon on an item, or asks to apply such a discount. This is about buying a NEW item, not returning an existing order.
 
         Customer message: "{text}"
         Existing context: "{context}"
 
-        Respond with only the intent name ({INTENT_REFUND_REQUEST}, {INTENT_ORDER_INQUIRY}, {INTENT_RECEIPT_REQUEST}, or {INTENT_GENERAL}):
+        Respond with only the intent name ({INTENT_REFUND_REQUEST}, {INTENT_ORDER_INQUIRY}, {INTENT_RECEIPT_REQUEST}, {INTENT_PROMO_INQUIRY}, or {INTENT_GENERAL}):
         """
         
         try:
@@ -575,6 +712,382 @@ class ActionAgent:
             "status_message": "Receipt retrieved",
         }
 
+    @log(span_type="tool", name="Check Promotions")
+    async def _check_promotions(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+        """Look up promotions for the item the customer is asking about.
+
+        Reads promos from a stale cache (``get_product_promotions`` does NOT
+        filter on ``effective_until``), so expired offers come back looking
+        live. This is the root-cause step the demo showcases: the data the
+        agent reasons over already bypasses the promo end date.
+        """
+        time.sleep(random.uniform(0.05, 0.15))
+
+        product = await find_catalog_product(user_query)
+        if not product:
+            return {
+                "status": 404,
+                "error": "no_product_found",
+                "status_message": (
+                    f"Couldn't match '{user_query[:80]}' to a catalog product."
+                ),
+            }
+
+        sku = product.get("sku")
+        list_price = float(product.get("unit_price", 0.0) or 0.0)
+        currency = product.get("currency", "USD")
+        promos = await get_product_promotions(sku) or []
+
+        now = datetime.utcnow()
+
+        def _parse_dt(value: Any) -> Optional[datetime]:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                try:
+                    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+                except ValueError:
+                    return None
+            return None
+
+        def _discount_usd(discount_type: Any, discount_value: Any) -> float:
+            try:
+                value = float(discount_value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+            if str(discount_type).lower() in ("percent", "percentage", "pct"):
+                return round(list_price * value, 2)
+            return round(value, 2)
+
+        promotions: List[Dict[str, Any]] = []
+        for promo in promos:
+            end = _parse_dt(promo.get("effective_until"))
+            expired = end is not None and end < now
+            promotions.append({
+                "code": promo.get("code"),
+                "description": promo.get("description"),
+                "discount_type": promo.get("discount_type"),
+                "discount_value": promo.get("discount_value"),
+                "tier": promo.get("tier"),
+                "effective_until": end.isoformat() if end else None,
+                "expired": expired,
+                "discount_usd": _discount_usd(promo.get("discount_type"), promo.get("discount_value")),
+            })
+
+        has_expired_promo = any(p["expired"] for p in promotions)
+
+        # Pick the promo to put on the table: the biggest dollar discount. In
+        # the seeded catalog that's the *expired* clearance blowout — exactly
+        # the stale offer we want the agent to surface (and Agent Control to
+        # later block). Live promos exist too, but they're smaller, so the
+        # "best deal" the agent proposes is the one that already bypassed its
+        # end date.
+        proposed = max(promotions, key=lambda p: p["discount_usd"], default=None)
+
+        result: Dict[str, Any] = {
+            "status": 200,
+            "product_name": product.get("product_name"),
+            "sku": sku,
+            "list_price": list_price,
+            "currency": currency,
+            "promotions": promotions,
+            "has_expired_promo": has_expired_promo,
+            "status_message": (
+                f"Found {len(promotions)} promotion(s) for {product.get('product_name')}"
+            ),
+        }
+
+        # Catch the stale offer *at proposal time*, before we pitch it to the
+        # customer. The guard step exposes ``proposed_promo_expired`` so a
+        # ``steer`` control keyed on it fires here (turn 1) rather than only at
+        # apply_discount (turn 2). On steer we honor the promo's end date:
+        # re-pick the best *live* promo, or drop the proposal entirely.
+        if proposed:
+            try:
+                await self._promo_proposal_guard(
+                    product_name=product.get("product_name"),
+                    promo_code=proposed["code"],
+                    proposed_promo_expired=bool(proposed["expired"]),
+                    proposed_promo_end_date=proposed["effective_until"],
+                    proposed_discount_usd=float(proposed["discount_usd"]),
+                )
+            except ControlSteerError as exc:
+                print(
+                    f"  {Fore.YELLOW}↩ Promo proposal steered by Agent Control "
+                    f"(best deal {proposed['code']} expired {proposed['effective_until']}); "
+                    f"re-checking live offers only{Style.RESET_ALL}"
+                )
+                live = [p for p in promotions if not p["expired"]]
+                proposed = max(live, key=lambda p: p["discount_usd"], default=None)
+                result["steered_by_agent_control"] = True
+                result["control_message"] = str(exc)
+
+        if proposed:
+            proposed_discount = float(proposed["discount_usd"])
+            result.update({
+                "proposed_promo_code": proposed["code"],
+                "proposed_promo_description": proposed["description"],
+                "proposed_discount_usd": proposed_discount,
+                "proposed_final_price": round(max(list_price - proposed_discount, 0.0), 2),
+                "proposed_promo_expired": proposed["expired"],
+                "proposed_promo_end_date": proposed["effective_until"],
+                "proposed_discount_tier": proposed["tier"],
+            })
+
+            # Stash the offer so a follow-up "yes" applies this exact promo.
+            # No-op when there's no chat session (CLI/traffic generator).
+            remember_promo(self._chat_session_id, {
+                "product_name": product.get("product_name"),
+                "sku": sku,
+                "currency": currency,
+                "list_price": list_price,
+                "discount_usd": proposed_discount,
+                "promo_code": proposed["code"],
+                "promo_description": proposed["description"],
+                "promo_end_date": proposed["effective_until"],
+                "promo_expired": bool(proposed["expired"]),
+                "discount_tier": proposed["tier"],
+            })
+        else:
+            # No promo to put on the table: either none seeded, or the control
+            # steered us away from the only (expired) offer. Clear any stale
+            # pending promo so a later "yes" can't resurrect it, and flag the
+            # "no active promo" case so the synthesizer says so plainly.
+            clear_promo(self._chat_session_id)
+            if result.get("steered_by_agent_control"):
+                result["no_active_promo"] = True
+                result["status_message"] = (
+                    f"No active promotions available for {product.get('product_name')}"
+                )
+
+        return result
+
+    @control(step_name="check_promotions")
+    async def _promo_proposal_guard(
+        self,
+        product_name: str,
+        promo_code: str,
+        proposed_promo_expired: bool,
+        proposed_promo_end_date: Optional[str],
+        proposed_discount_usd: float,
+    ) -> Dict[str, Any]:
+        """Guarded checkpoint for the promo *proposal* (turn 1).
+
+        Does no real work — it just echoes the proposal signals as its output so
+        Agent Control can evaluate them. A ``steer`` control scoped to step name
+        ``check_promotions`` (path ``output``, ``proposed_promo_expired`` must be
+        ``false``) fires when the best deal is past its end date, raising
+        ``ControlSteerError``; ``_check_promotions`` catches it and re-checks the
+        live offers. Registered as an ``llm`` step, so at the POST stage the
+        server sees this dict as ``output``.
+        """
+        return {
+            "product_name": product_name,
+            "promo_code": promo_code,
+            "proposed_promo_expired": bool(proposed_promo_expired),
+            "proposed_promo_end_date": proposed_promo_end_date,
+            "proposed_discount_usd": float(proposed_discount_usd),
+        }
+
+    async def _apply_discount(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
+        """Apply a promo to the item and add it to the customer's cart.
+
+        Resolves *which* promo to apply from two sources:
+
+        * Interactive UI (a chat session exists): the exact promo we proposed
+          earlier this session — recalled from the session cache — so the
+          customer gets the deal they just said "yes" to (the real ~55%
+          clearance value, drastic on purpose).
+        * CLI / traffic generator (no chat session): the time-based spike
+          schedule (``discount_for_now``), which ramps the discount over the
+          run so the Galileo trace shows a normal→spike pattern.
+
+        Either way the applied promo is expired — that's the leak the demo
+        catches. Delegates to ``_apply_discount_span`` so the tool span carries
+        the discount dollars as metadata and the ``@control`` guard can block it.
+        """
+        pending = recall_promo(self._chat_session_id)
+
+        if pending:
+            resolved = dict(pending)
+        else:
+            product = await find_catalog_product(user_query)
+            if not product:
+                return {
+                    "status": 404,
+                    "error": "no_product_found",
+                    "status_message": (
+                        f"Couldn't match '{user_query[:80]}' to a catalog product."
+                    ),
+                }
+            list_price = float(product.get("unit_price", 0.0) or 0.0)
+            schedule = discount_for_now(list_price)
+            resolved = {
+                "product_name": product.get("product_name"),
+                "sku": product.get("sku"),
+                "currency": product.get("currency", "USD"),
+                "list_price": list_price,
+                "discount_usd": schedule["discount_usd"],
+                "promo_code": schedule["promo_code"],
+                "promo_description": schedule["promo_description"],
+                "promo_end_date": schedule["promo_end_date"].isoformat(),
+                "promo_expired": schedule["promo_expired"],
+                "discount_tier": schedule["tier"],
+            }
+
+        try:
+            return await self._apply_discount_span(
+                product_name=resolved.get("product_name"),
+                sku=resolved.get("sku"),
+                currency=resolved.get("currency", "USD"),
+                list_price=float(resolved.get("list_price", 0.0) or 0.0),
+                discount_usd=float(resolved.get("discount_usd", 0.0) or 0.0),
+                promo_code=resolved.get("promo_code"),
+                promo_description=resolved.get("promo_description"),
+                promo_end_date=resolved.get("promo_end_date"),
+                promo_expired=bool(resolved.get("promo_expired", False)),
+                discount_tier=resolved.get("discount_tier"),
+            )
+        finally:
+            # Whether applied or blocked, the offer has been acted on — forget it
+            # so a later stray "yes" doesn't silently re-apply it.
+            clear_promo(self._chat_session_id)
+
+    @log(
+        span_type="tool",
+        name="Apply Discount",
+        # Surface the applied discount as span metadata so it's visible (and
+        # chartable over time) in the Galileo trace view. `params` callables
+        # receive this function's merged input args, so the values below are
+        # exactly what we attempted to apply. Metadata values must be strings.
+        params={
+            "metadata": lambda i: {
+                "discount_usd": f"{float(i.get('discount_usd', 0.0)):.2f}",
+                "list_price": f"{float(i.get('list_price', 0.0)):.2f}",
+                "promo_code": str(i.get("promo_code", "")),
+                "promo_expired": str(i.get("promo_expired", False)).lower(),
+                "promo_end_date": str(i.get("promo_end_date", "")),
+                "discount_tier": str(i.get("discount_tier", "")),
+            }
+        },
+    )
+    async def _apply_discount_span(
+        self,
+        product_name: str,
+        sku: str,
+        currency: str,
+        list_price: float,
+        discount_usd: float,
+        promo_code: str,
+        promo_description: str,
+        promo_end_date: str,
+        promo_expired: bool,
+        discount_tier: str,
+    ) -> Dict[str, Any]:
+        """Run the guarded apply and translate a control block into a
+        structured "expired, not applied" payload.
+
+        Mirrors ``_create_refund_request``: the ``@control``-decorated
+        ``apply_discount`` does the real work; if Agent Control denies it
+        (promo past its end date), we catch the violation here and return a
+        412 that keeps the customer at full price. Catching inside this span
+        keeps the Galileo trace clean — the block shows up as the span's output
+        plus the deny event, not an unhandled exception — while the metadata
+        above still records what the agent *tried* to give away.
+        """
+        try:
+            return await self.apply_discount(
+                product_name,
+                sku,
+                currency,
+                list_price,
+                discount_usd,
+                promo_code,
+                promo_description,
+                promo_end_date,
+                promo_expired,
+                discount_tier,
+            )
+        except ControlViolationError as exc:
+            print(
+                f"  {Fore.RED}⛔ Apply-discount blocked by Agent Control "
+                f"(promo {promo_code} expired {promo_end_date}); keeping full price"
+                f"{Style.RESET_ALL}"
+            )
+            return {
+                "status": 412,
+                "error": "blocked_by_agent_control",
+                "control_message": str(exc),
+                "product_name": product_name,
+                "sku": sku,
+                "currency": currency,
+                "list_price": round(float(list_price), 2),
+                # Nothing applied: the customer stays at list price.
+                "discount_usd": 0.0,
+                "final_price": round(float(list_price), 2),
+                # What the agent *attempted* — surfaced so the UI/trace can show
+                # the loss that was prevented.
+                "attempted_discount_usd": round(float(discount_usd), 2),
+                "attempted_final_price": round(max(float(list_price) - float(discount_usd), 0.0), 2),
+                "promo_code": promo_code,
+                "promo_description": promo_description,
+                "promo_end_date": promo_end_date,
+                "promo_expired": True,
+                "discount_tier": discount_tier,
+                "status_message": (
+                    f"Blocked by Agent Control: promo {promo_code} expired "
+                    f"{promo_end_date}; kept {currency} {round(float(list_price), 2)} full price"
+                ),
+            }
+
+    @control()
+    async def apply_discount(
+        self,
+        product_name: str,
+        sku: str,
+        currency: str,
+        list_price: float,
+        discount_usd: float,
+        promo_code: str,
+        promo_description: str,
+        promo_end_date: str,
+        promo_expired: bool,
+        discount_tier: str,
+    ) -> Dict[str, Any]:
+        """Persist-and-return the discounted cart line (simulated).
+
+        Guarded by Agent Control. The ``promo_expired`` flag in the return value
+        is the signal the ``promo-compliance`` control keys on: when a control
+        bound to this step decides the offer is stale, it raises
+        ``ControlViolationError`` and this apply never lands. With no promo
+        control configured (the default until the console is set up), the guard
+        is a no-op and the expired discount goes through — the failure mode.
+        """
+        time.sleep(random.uniform(0.05, 0.15))
+
+        final_price = round(max(float(list_price) - float(discount_usd), 0.0), 2)
+
+        return {
+            "status": 201,
+            "cart_id": f"CART_{random.randint(10000, 99999)}",
+            "product_name": product_name,
+            "sku": sku,
+            "currency": currency,
+            "list_price": round(float(list_price), 2),
+            "discount_usd": round(float(discount_usd), 2),
+            "final_price": final_price,
+            "promo_code": promo_code,
+            "promo_description": promo_description,
+            "promo_end_date": promo_end_date,
+            # ---- expired-promo signals (what Galileo Signals/Evals/Control key on) ----
+            "promo_expired": promo_expired,
+            "discount_tier": discount_tier,
+            "status_message": (
+                f"Applied {promo_code} (-{currency} {round(float(discount_usd), 2)}) "
+                f"and added {product_name} to cart"
+            ),
+        }
+
     @log(span_type="tool", name="Create Ticket")
     async def _create_ticket(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
         """Simulate creating a new support ticket"""
@@ -739,6 +1252,8 @@ class ActionAgent:
             "explain_refund_state": 0.0005,
             "explain_order_state": 0.0005,
             "get_receipt": 0.0005,
+            "check_promotions": 0.0005,
+            "apply_discount": 0.0015,
         }
         return costs.get(tool_name, 0.001)
     
@@ -748,11 +1263,25 @@ class ActionAgent:
             return "no_action_required"
         
         successful_tools = [r.tool for r in tool_receipts if 200 <= r.status < 300]
-        
-        if "create_refund_request" in successful_tools:
+
+        # Agent Control blocked an expired promo: distinct resolution so the
+        # audit trail / UI can tell "discount applied" from "discount blocked".
+        for r in tool_receipts:
+            if (
+                r.tool == "apply_discount"
+                and r.status == 412
+                and (r.response or {}).get("error") == "blocked_by_agent_control"
+            ):
+                return "discount_blocked"
+
+        if "apply_discount" in successful_tools:
+            return "discount_applied"
+        elif "create_refund_request" in successful_tools:
             return "refund_request_created"
         elif "escalate_ticket" in successful_tools:
             return "ticket_escalated"
+        elif "check_promotions" in successful_tools:
+            return "promotions_checked"
         elif "get_receipt" in successful_tools:
             return "receipt_provided"
         elif "update_ticket" in successful_tools:

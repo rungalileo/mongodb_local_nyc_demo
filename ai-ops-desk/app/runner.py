@@ -68,6 +68,79 @@ def _attach_session_id(result: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
+    """Pull applied-discount fields off the apply_discount receipt.
+
+    We attach these to the *trace root* (see `_attach_trace_metadata`) because
+    the Console's trace-table column selector can only surface **trace-level**
+    metadata — deep span metadata (on the Apply Discount span) can't be shown
+    as a column. Values are flat strings, comma-free, so `discount_usd` sorts
+    and filters as a number.
+    """
+    action = state.get("action_output")
+    receipts = getattr(action, "tool_receipts", None) if action else None
+    if not receipts:
+        return {}
+
+    # Turn 2 (apply): the apply_discount receipt carries what was actually
+    # applied (or attempted, when blocked) plus the list price.
+    for r in receipts:
+        if getattr(r, "tool", None) != "apply_discount":
+            continue
+        resp = getattr(r, "response", None) or {}
+        md: Dict[str, str] = {
+            "discount_usd": f"{float(resp.get('discount_usd', 0.0) or 0.0):.2f}",
+            "list_price": f"{float(resp.get('list_price', 0.0) or 0.0):.2f}",
+            "promo_expired": str(resp.get("promo_expired", False)).lower(),
+            "apply_status": str(getattr(r, "status", "")),
+        }
+        if resp.get("promo_code"):
+            md["promo_code"] = str(resp["promo_code"])
+        if resp.get("promo_end_date"):
+            md["promo_end_date"] = str(resp["promo_end_date"])
+        if "attempted_discount_usd" in resp:
+            md["attempted_discount_usd"] = f"{float(resp.get('attempted_discount_usd', 0.0) or 0.0):.2f}"
+        return md
+
+    # Turn 1 (proposal): no apply yet, so surface the *proposed* discount and
+    # the list price off the check_promotions receipt. Without this the
+    # "any discount?" turn shows no $ columns in the Console trace table.
+    for r in receipts:
+        if getattr(r, "tool", None) != "check_promotions":
+            continue
+        resp = getattr(r, "response", None) or {}
+        md = {
+            "discount_usd": f"{float(resp.get('proposed_discount_usd', 0.0) or 0.0):.2f}",
+            "list_price": f"{float(resp.get('list_price', 0.0) or 0.0):.2f}",
+            "promo_expired": str(resp.get("proposed_promo_expired", False)).lower(),
+            "promo_stage": "proposed",
+        }
+        if resp.get("proposed_promo_code"):
+            md["promo_code"] = str(resp["proposed_promo_code"])
+        if resp.get("proposed_promo_end_date"):
+            md["promo_end_date"] = str(resp["proposed_promo_end_date"])
+        if resp.get("no_active_promo"):
+            md["no_active_promo"] = "true"
+        return md
+
+    return {}
+
+
+def _attach_trace_metadata(md: Dict[str, str], trace: Any = None) -> None:
+    """Best-effort merge of trace-level metadata onto the current (or given)
+    trace before it's flushed. Never raises — logging must not break a run."""
+    if not md:
+        return
+    try:
+        target = trace if trace is not None else galileo_context.get_current_trace()
+        if target is not None:
+            existing = dict(getattr(target, "user_metadata", None) or {})
+            existing.update(md)
+            target.user_metadata = existing
+    except Exception:
+        pass
+
+
 def _start_session(scenario: str, chat_session_id: Optional[str] = None) -> Optional[str]:
     """Explicitly start (or resume) a Galileo session.
 
@@ -106,6 +179,7 @@ async def run_query(
     if session_id and not result.get("galileo_session_id"):
         result["galileo_session_id"] = session_id
     _attach_session_id(result)
+    _attach_trace_metadata(_promo_trace_metadata(result))
     galileo_context.flush()
     return result
 
@@ -169,6 +243,9 @@ async def stream_query(
         yield {"type": "error", "message": error_msg}
     finally:
         if parent_trace is not None and logger is not None:
+            # Attach applied-discount fields to the trace root so they can be
+            # enabled as columns in the Console trace table.
+            _attach_trace_metadata(_promo_trace_metadata(final_state), parent_trace)
             try:
                 logger.conclude(
                     output=error_msg or final_state.get("status", "completed"),

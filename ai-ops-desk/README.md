@@ -67,6 +67,9 @@ This demo showcases:
    python setup_orders.py
    python setup_refund_requests.py
    python setup_tickets.py
+   # Expired-promo demo (see EXPIRED_PROMO_DEMO.md):
+   python setup_products.py
+   python setup_promos.py
    ```
 
 5. **Run scenarios (CLI)**
@@ -89,6 +92,28 @@ This demo showcases:
 
 ### Available Toggles
 - **drift**: Simulates policy drift by forcing use of expired policies
+
+## Expired-Promo Use Case
+
+A newer demo scenario: a customer shops for an expensive catalog item and asks
+if there's a discount. The agent reads a **stale promo cache** that returns
+offers whose end date has already passed, then applies one anyway and adds the
+item to the cart — leaking margin. The applied discount dollar amount is logged
+as span metadata (`discount_usd`), and a traffic generator makes it stay small
+for the first N minutes then **spike**, so the anomaly is obvious in the Galileo
+trace view.
+
+Quick run:
+```bash
+python setup_products.py && python setup_promos.py
+python main.py --scenario promo_oled_tv
+# Generate the normal->spike traffic pattern (spike after 2 min, run 6 min):
+python run_promo_traffic.py --normal-window 2 --interval 10 --duration 6
+```
+
+Full walkthrough — including how to catch it with a Galileo **Signal**, quantify
+it with an **Eval**, and block it with a **Luna guardrail** — is in
+[`EXPIRED_PROMO_DEMO.md`](./EXPIRED_PROMO_DEMO.md).
 
 ## Agent Control (runtime guardrails)
 

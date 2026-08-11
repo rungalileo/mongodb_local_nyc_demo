@@ -14,6 +14,11 @@ from galileo.openai import openai
 # Load environment variables from .env file
 load_dotenv()
 
+# Trust the OS certificate store before the OpenAI client builds its TLS
+# context (fixes corporate TLS-interception breaking OpenAI calls). Safe no-op
+# in environments where certifi already works.
+import app.tls_trust  # noqa: F401,E402
+
 class OpenAIProvider:
     """OpenAI provider with automatic tracing"""
     

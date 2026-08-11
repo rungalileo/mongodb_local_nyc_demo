@@ -14,6 +14,10 @@ from dotenv import load_dotenv
 # AC server run). Without this, exported shell vars silently shadow .env.
 load_dotenv(override=True)
 
+# Trust the OS certificate store before any HTTPS client is built (fixes
+# corporate TLS-interception breaking OpenAI calls). Safe no-op otherwise.
+import app.tls_trust  # noqa: F401,E402
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse

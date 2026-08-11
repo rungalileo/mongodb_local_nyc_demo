@@ -306,9 +306,22 @@ function summarizeResponse(
     "receipt_amount",
     "receipt_order_id",
     "amount_matches_receipt",
+    // Promo / discount tool fields.
+    "list_price",
+    "discount_usd",
+    "final_price",
+    "promo_code",
+    "promo_expired",
+    "promo_end_date",
+    "discount_tier",
+    "has_expired_promo",
+    // Surfaced on a promo blocked by Agent Control: what the agent tried to give.
+    "attempted_discount_usd",
+    "attempted_final_price",
     // Agent Control fields surface when a tool is blocked by a control.
     "message",
     "control_name",
+    "control_message",
   ];
   const lines: string[] = [];
   for (const k of keys) {

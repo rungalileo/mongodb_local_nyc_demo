@@ -25,6 +25,21 @@ export function customerMessage(result: ChatResult): string {
     );
   }
 
+  const discount = result.actions.find((a) => a.tool === "apply_discount");
+  if (discount && discount.ok) {
+    const code = (discount.response.promo_code as string) || "your promo";
+    const amount = discount.response.discount_usd as number;
+    const currency = (discount.response.currency as string) || "USD";
+    const finalPrice = discount.response.final_price as number;
+    const product = (discount.response.product_name as string) || "your item";
+    return (
+      `Good news — I applied promo ${code} to the ${product}, saving you ` +
+      `${currency} ${amount?.toFixed?.(2) ?? amount}. ` +
+      `Your new price is ${currency} ${finalPrice?.toFixed?.(2) ?? finalPrice}. ` +
+      `I've added it to your cart.`
+    );
+  }
+
   const escalate = result.actions.find((a) => a.tool === "escalate_ticket");
   if (escalate && escalate.ok) {
     const id = escalate.response.ticket_id as string;
@@ -58,25 +73,47 @@ function stripWarning(text: string): string {
   return text.replace(/\s*\[WARNING:[^\]]*\]\s*/gi, " ").replace(/\s+/g, " ");
 }
 
-export function actionChips(actions: ActionReceipt[]): {
+export type ActionChip = {
   icon: string;
   label: string;
-}[] {
+  tone?: "success" | "warn";
+};
+
+export function actionChips(actions: ActionReceipt[]): ActionChip[] {
   return actions
-    .map((a) => {
+    .map((a): ActionChip | null => {
+      // Agent Control blocked an expired promo: render as an amber chip even
+      // though the receipt isn't "ok" (HTTP 412), so the save shows in the UI.
+      if (
+        a.tool === "apply_discount" &&
+        !a.ok &&
+        a.response &&
+        (a.response.error as string) === "blocked_by_agent_control"
+      ) {
+        const cur = (a.response.currency as string) || "USD";
+        const attempted = a.response.attempted_discount_usd as number;
+        const savedNote =
+          attempted != null ? ` · saved ${cur} ${attempted}` : "";
+        return { icon: "⛔", label: `Expired promo blocked${savedNote}`, tone: "warn" };
+      }
       if (!a.ok) return null;
       if (a.tool === "create_refund_request") {
         const amt = a.response.amount as number;
         const cur = (a.response.currency as string) || "USD";
-        return { icon: "↩", label: `Refund issued · ${cur} ${amt}` };
+        return { icon: "↩", label: `Refund issued · ${cur} ${amt}`, tone: "success" };
+      }
+      if (a.tool === "apply_discount") {
+        const amt = a.response.discount_usd as number;
+        const cur = (a.response.currency as string) || "USD";
+        return { icon: "🏷", label: `Discount applied · -${cur} ${amt}`, tone: "success" };
       }
       if (a.tool === "escalate_ticket") {
-        return { icon: "⚑", label: "Escalated to specialist" };
+        return { icon: "⚑", label: "Escalated to specialist", tone: "success" };
       }
       if (a.tool === "create_ticket" || a.tool === "update_ticket") {
-        return { icon: "✎", label: `Ticket ${a.response.ticket_id}` };
+        return { icon: "✎", label: `Ticket ${a.response.ticket_id}`, tone: "success" };
       }
       return null;
     })
-    .filter(Boolean) as { icon: string; label: string }[];
+    .filter(Boolean) as ActionChip[];
 }

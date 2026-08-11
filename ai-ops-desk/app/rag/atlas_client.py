@@ -140,6 +140,57 @@ class AtlasClient:
             print(f"  Found {len(results)} orders")
             return results
 
+    @log(span_type="tool", name="Get Catalog Products")
+    async def get_catalog_products(self) -> List[Dict[str, Any]]:
+        """Return the full (small) shoppable product catalog."""
+        results = list(self.db.products.find({}))
+        return results
+
+    @log(span_type="tool", name="Find Product")
+    async def find_product(self, query_text: str) -> Optional[Dict[str, Any]]:
+        """Best-effort catalog lookup from a natural-language query.
+
+        The catalog is tiny, so instead of a vector index we score each product
+        by how many of its name tokens / keywords appear in the query and return
+        the best match. Deterministic and index-free, which keeps the demo
+        resilient across fresh Atlas clusters.
+        """
+        products = list(self.db.products.find({}))
+        if not products:
+            return None
+
+        q = (query_text or "").lower()
+        best = None
+        best_score = 0
+        for product in products:
+            tokens = set()
+            for token in str(product.get("product_name", "")).lower().split():
+                if len(token) >= 3:
+                    tokens.add(token)
+            for kw in product.get("keywords", []) or []:
+                tokens.add(str(kw).lower())
+            score = sum(1 for t in tokens if t in q)
+            if score > best_score:
+                best_score = score
+                best = product
+
+        # No token overlap: fall back to the priciest item so the "expensive
+        # item" narrative still holds rather than returning nothing.
+        if best is None or best_score == 0:
+            best = max(products, key=lambda p: float(p.get("unit_price", 0) or 0))
+        return best
+
+    @log(span_type="tool", name="Get Promos For SKU")
+    async def get_promos_for_sku(self, sku: str) -> List[Dict[str, Any]]:
+        """Return promos for a SKU.
+
+        NOTE (intentional demo bug): this reads every promo for the SKU with no
+        ``effective_until`` filter, simulating a stale promo cache that serves
+        expired offers as if they were live.
+        """
+        results = list(self.db.promos.find({"sku": sku}))
+        return results
+
     @log(span_type="tool", name="Create Audit Record")
     async def create_audit_record(self, audit_data: Dict[str, Any]) -> bool:
         """Create a new audit record"""

@@ -8,6 +8,10 @@ tqdm>=4.65.0
 httpx>=0.25.0
 uvloop>=0.17.0
 typing-extensions>=4.5.0
+# Make Python use the OS trust store so corporate TLS-interception proxies
+# (whose root CA is in the OS keychain but not certifi) don't break outbound
+# HTTPS (e.g. OpenAI). See app/tls_trust.py. Harmless in cloud/CI.
+truststore>=0.9.0
 
 # --- Galileo + Agent Control Enterprise (ACE) ----------------------------------
 # The Agent Control -> Galileo ControlSpan bridge isn't on PyPI yet, so we

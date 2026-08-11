@@ -40,6 +40,10 @@ class AgentState(dict):
     # MUST be annotated here -- LangGraph derives its state schema from the
     # class annotations and drops unannotated keys from the input dict.
     chat_session_id: Optional[str] = None
+    # Router decision + classified intent. MUST be annotated (see note above)
+    # so LangGraph keeps them in the state passed between nodes.
+    route: Optional[str] = None
+    intent: Optional[str] = None
     
     # Agent outputs
     policy_output: Optional[PolicyOutput] = None
@@ -126,6 +130,39 @@ async def records_node(state: AgentState) -> AgentState:
     return state
 
 
+@log(span_type="workflow", name="Router")
+async def router_node(state: AgentState) -> AgentState:
+    """Entry router: classify the turn and pick the path.
+
+    ``promo`` turns skip the Records and Policy agents (and their irrelevant
+    order/refund/policy tool calls) so the false-promo demo trace stays focused;
+    everything else takes the full refund/order/receipt path unchanged. The
+    classified intent is stashed on the state and reused by the Action agent so
+    it isn't re-classified.
+    """
+    print(f"{Fore.WHITE}→ Router: Classifying turn{Style.RESET_ALL}")
+    try:
+        agent = ActionAgent()
+        route, intent = await agent.classify_route(
+            user_query=state["user_query"],
+            chat_session_id=state.get("chat_session_id"),
+        )
+        state["route"] = route
+        state["intent"] = intent
+        print(f"{Fore.WHITE}✓ Router: route={route} intent={intent}{Style.RESET_ALL}")
+    except Exception as e:
+        # Fail safe to the full path so nothing is silently skipped.
+        print(f"✗ Router failed: {str(e)}; defaulting to support path")
+        state["route"] = "support"
+        state["intent"] = None
+    return state
+
+
+def _route_selector(state: AgentState) -> str:
+    """Conditional-edge selector: 'promo' -> action, else -> records."""
+    return "promo" if state.get("route") == "promo" else "support"
+
+
 @log(span_type="workflow", name="Action Agent")
 async def action_node(state: AgentState) -> AgentState:
     """Action agent node"""
@@ -134,7 +171,14 @@ async def action_node(state: AgentState) -> AgentState:
 
     try:
         agent = ActionAgent()
-        result = await agent.process(state["user_id"], state["user_query"], state.get("policy_output"), state.get("records_output"))
+        result = await agent.process(
+            state["user_id"],
+            state["user_query"],
+            state.get("policy_output"),
+            state.get("records_output"),
+            chat_session_id=state.get("chat_session_id"),
+            intent=state.get("intent"),
+        )
 
         state["action_output"] = result
         print(f"{Fore.YELLOW}✓ Action Agent: Complete{Style.RESET_ALL}")
@@ -202,7 +246,11 @@ async def synthesizer_node(state: AgentState) -> AgentState:
 
 
 '''
-records → policy → action → audit → synthesizer → END
+router ─┬─ promo ───────────────► action → audit → synthesizer → END
+        └─ support → records → policy → action → audit → synthesizer → END
+
+The router skips Records/Policy (and their irrelevant order/refund/policy tool
+calls) for the promo path; the refund/order/receipt path is unchanged.
 '''
 async def create_ops_desk_graph():
     """Create and configure the operations desk agent graph"""
@@ -210,6 +258,7 @@ async def create_ops_desk_graph():
     workflow = StateGraph(AgentState)
     
     # Add nodes
+    workflow.add_node("router", router_node)
     workflow.add_node("records", records_node)
     workflow.add_node("policy", policy_node)
     workflow.add_node("action", action_node)
@@ -217,9 +266,15 @@ async def create_ops_desk_graph():
     workflow.add_node("synthesizer", synthesizer_node)
     
     # Set entry point
-    workflow.set_entry_point("records")
+    workflow.set_entry_point("router")
     
-    # Add linear edges
+    # Route: promo skips straight to action; everything else takes the full
+    # records → policy → action path.
+    workflow.add_conditional_edges(
+        "router",
+        _route_selector,
+        {"promo": "action", "support": "records"},
+    )
     workflow.add_edge("records", "policy")
     workflow.add_edge("policy", "action")
     workflow.add_edge("action", "audit")

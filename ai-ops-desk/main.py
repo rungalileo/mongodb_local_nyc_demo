@@ -8,6 +8,10 @@ and Galileo SDK for observability, metrics, and guardrails.
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
+# Trust the OS certificate store before any HTTPS client is built (fixes
+# corporate TLS-interception breaking OpenAI calls). Safe no-op otherwise.
+import app.tls_trust  # noqa: F401,E402
+
 import argparse
 import asyncio
 import sys
@@ -88,6 +92,13 @@ async def main():
         help="Index of scenario to run (0-6). Default: 0 (refund_bluetooth_earbuds)"
     )
     parser.add_argument(
+        "--scenario",
+        type=str,
+        choices=list(SCENARIOS.keys()),
+        default=None,
+        help="Run a scenario by name (overrides --index). e.g. --scenario promo_oled_tv"
+    )
+    parser.add_argument(
         "--toggles",
         nargs="+",
         help="Feature toggles to enable. Available: drift (forces old policy version)"
@@ -102,7 +113,7 @@ async def main():
     toggles_provided = args.toggles or []
     try:
         scenario_names = list(SCENARIOS.keys())
-        scenario = scenario_names[args.index]
+        scenario = args.scenario if args.scenario else scenario_names[args.index]
 
         result = await run_scenario(scenario, toggles_provided)
 

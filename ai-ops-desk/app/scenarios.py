@@ -45,4 +45,17 @@ SCENARIOS = {
         "user_query": "I'd like to return both headphones and get a full refund please",
         "user_id": "user_001",
     },
+    # Expired-promo demo. Customer shops for an expensive catalog item and asks
+    # for a discount. The agent reads a stale promo cache, surfaces a promo
+    # whose end date has already passed, and applies it anyway — leaking margin.
+    # The applied discount dollar amount is logged as span metadata; run the
+    # promo traffic generator to see it stay small then spike over time.
+    "promo_oled_tv": {
+        "user_query": "Is there any promo or discount running on the 85-inch OLED TV? If there's a deal, apply it and add it to my cart.",
+        "user_id": "user_001",
+    },
+    "promo_laptop": {
+        "user_query": "Any discount available on the UltraBook Pro 16 laptop? Please apply the deal and add it to my order.",
+        "user_id": "user_003",
+    },
 }

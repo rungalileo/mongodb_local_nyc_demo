@@ -164,6 +164,23 @@ class AuditAgent:
                 elif tool_name == "explain_refund_state":
                     explanation = response.get("explanation", "No explanation provided")
                     rationale_parts.append(f"  - Provided refund explanation: {explanation[:100]}{'...' if len(explanation) > 100 else ''}")
+
+                elif tool_name == "check_promotions":
+                    product_name = response.get("product_name", "unknown product")
+                    num_promos = len(response.get("promotions", []) or [])
+                    rationale_parts.append(f"  - Checked promotions for {product_name}: found {num_promos}")
+                    if response.get("has_expired_promo"):
+                        rationale_parts.append("⚠️  Promo drift detected: promo cache returned EXPIRED promotions past their end date")
+
+                elif tool_name == "apply_discount":
+                    code = response.get("promo_code", "unknown")
+                    discount = response.get("discount_usd", 0)
+                    currency = response.get("currency", "USD")
+                    product_name = response.get("product_name", "unknown product")
+                    rationale_parts.append(f"  - Applied promo {code} to {product_name}: -{currency} {discount}")
+                    if response.get("promo_expired"):
+                        end_date = response.get("promo_end_date", "unknown")
+                        rationale_parts.append(f"⚠️  Applied an EXPIRED promo ({code}, ended {end_date}) — discount should not have been honored")
         else:
             rationale_parts.append("No tools were executed for this request")
         

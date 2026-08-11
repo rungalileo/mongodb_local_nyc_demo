@@ -198,7 +198,14 @@ export function ChatWidget({
 
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-5">
           {turns.map((t, i) => (
-            <Bubble key={i} turn={t} me={me} />
+            <Bubble
+              key={i}
+              turn={t}
+              me={me}
+              isLast={i === turns.length - 1}
+              busy={busy}
+              onReply={send}
+            />
           ))}
           {busy && <ThinkingBubble agents={liveAgents} />}
         </div>
@@ -214,6 +221,7 @@ export function ChatWidget({
             {[
               "Can I get the receipt for my bluetooth headphones?",
               "Can you issue me a refund?",
+              "Any discount on the 85-inch OLED TV?",
             ].map((suggestion) => (
               <button
                 key={suggestion}
@@ -255,10 +263,29 @@ export function ChatWidget({
   );
 }
 
-function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
+function Bubble({
+  turn,
+  me,
+  isLast,
+  busy,
+  onReply,
+}: {
+  turn: ChatTurn;
+  me: Identity;
+  isLast?: boolean;
+  busy?: boolean;
+  onReply?: (text: string) => void;
+}) {
   const isUser = turn.role === "user";
   const chips = turn.result ? actionChips(turn.result.actions) : [];
   const receipt = !isUser && turn.result ? findReceipt(turn.result.actions) : null;
+  const discount = !isUser && turn.result ? findDiscount(turn.result.actions) : null;
+  // Show apply/decline quick replies only under the latest bot turn that is a
+  // promo *proposal* (check_promotions proposed a code, nothing applied yet).
+  const showPromoReplies =
+    !isUser && !!isLast && !!onReply && turn.result
+      ? findPromoProposal(turn.result.actions)
+      : false;
   return (
     <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && <Avatar kind="bot" />}
@@ -273,12 +300,17 @@ function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
           {turn.text}
         </div>
         {receipt && <ReceiptCard receipt={receipt} />}
+        {discount && <DiscountCard discount={discount} />}
         {chips.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {chips.map((c, i) => (
               <span
                 key={i}
-                className="inline-flex items-center gap-1 text-xs rounded-full border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 px-2 py-0.5"
+                className={`inline-flex items-center gap-1 text-xs rounded-full border px-2 py-0.5 ${
+                  c.tone === "warn"
+                    ? "border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
+                    : "border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300"
+                }`}
               >
                 <span>{c.icon}</span>
                 {c.label}
@@ -286,9 +318,42 @@ function Bubble({ turn, me }: { turn: ChatTurn; me: Identity }) {
             ))}
           </div>
         )}
+        {showPromoReplies && (
+          <div className="flex flex-wrap gap-1.5 mt-0.5">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onReply?.("yes")}
+              className="rounded-full border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 transition-colors disabled:opacity-40"
+            >
+              Yes, apply it
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onReply?.("No thanks")}
+              className="rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 px-3 py-1 text-xs font-medium text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
+            >
+              No thanks
+            </button>
+          </div>
+        )}
       </div>
       {isUser && <Avatar kind="user" me={me} />}
     </div>
+  );
+}
+
+function findPromoProposal(actions: ChatResult["actions"]): boolean {
+  if (!actions) return false;
+  // If a discount was applied/blocked this turn, it's not a pending proposal.
+  if (actions.some((a) => a.tool === "apply_discount")) return false;
+  return actions.some(
+    (a) =>
+      a.tool === "check_promotions" &&
+      a.response &&
+      typeof a.response === "object" &&
+      Boolean((a.response as { proposed_promo_code?: string }).proposed_promo_code),
   );
 }
 
@@ -425,6 +490,127 @@ function ReceiptCard({ receipt }: { receipt: ReceiptShape }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+type DiscountShape = {
+  product_name?: string;
+  sku?: string;
+  currency?: string;
+  list_price?: number;
+  discount_usd?: number;
+  final_price?: number;
+  promo_code?: string;
+  promo_description?: string;
+  promo_end_date?: string;
+  promo_expired?: boolean;
+  discount_tier?: string;
+  // Present only on the Agent-Control-blocked payload.
+  error?: string;
+  attempted_discount_usd?: number;
+  attempted_final_price?: number;
+};
+
+type DiscountCardData = DiscountShape & { blocked: boolean };
+
+function findDiscount(actions: ChatResult["actions"]): DiscountCardData | null {
+  if (!actions) return null;
+  const applied = actions.find(
+    (a) => a.tool === "apply_discount" && a.ok && a.response && typeof a.response === "object",
+  );
+  if (applied) return { ...(applied.response as DiscountShape), blocked: false };
+
+  // Blocked by Agent Control: not `ok` (HTTP 412), still worth showing as the
+  // "expired, not applied" card so the audience sees the loss that was stopped.
+  const blocked = actions.find(
+    (a) =>
+      a.tool === "apply_discount" &&
+      a.response &&
+      typeof a.response === "object" &&
+      (a.response as DiscountShape).error === "blocked_by_agent_control",
+  );
+  if (blocked) return { ...(blocked.response as DiscountShape), blocked: true };
+  return null;
+}
+
+function DiscountCard({ discount }: { discount: DiscountCardData }) {
+  const blocked = discount.blocked;
+  const currency = discount.currency;
+  const listPrice = discount.list_price;
+  // On the blocked card, surface what the agent *tried* to give away.
+  const savings = blocked ? discount.attempted_discount_usd : discount.discount_usd;
+  const finalPrice = blocked ? discount.attempted_final_price : discount.final_price;
+  const endDate = formatDate(discount.promo_end_date);
+
+  const accent = blocked
+    ? "from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/40"
+    : "from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/40";
+
+  return (
+    <div className="w-full max-w-md rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-sm overflow-hidden">
+      <div className={`flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 bg-gradient-to-r ${accent}`}>
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-medium">
+            {blocked ? "Promo blocked" : "Discount applied"}
+          </div>
+          <div className="font-mono text-sm text-zinc-900 dark:text-zinc-100 mt-0.5">
+            {discount.promo_code || "—"}
+          </div>
+        </div>
+        <span
+          className={`inline-flex items-center text-[11px] uppercase tracking-wider rounded-full px-2.5 py-1 font-medium ${
+            blocked
+              ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300"
+              : "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300"
+          }`}
+        >
+          {blocked ? "Expired" : "Added to cart"}
+        </span>
+      </div>
+
+      <div className="px-4 py-3.5">
+        <div className="text-[15px] font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+          {discount.product_name || "Item"}
+        </div>
+        {discount.sku && (
+          <div className="text-[11px] font-mono text-zinc-500 dark:text-zinc-400 mt-0.5">
+            {discount.sku}
+          </div>
+        )}
+      </div>
+
+      <div className="px-4 pb-3 space-y-1.5 border-b border-dashed border-zinc-200 dark:border-zinc-700">
+        <div className="flex items-center justify-between text-[13px] text-zinc-600 dark:text-zinc-400">
+          <span>List price</span>
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">
+            {formatMoney(listPrice, currency)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-[13px]">
+          <span className={blocked ? "text-zinc-400 dark:text-zinc-500 line-through" : "text-emerald-600 dark:text-emerald-400"}>
+            {blocked ? "Discount (not applied)" : `Discount ${discount.promo_code ? `· ${discount.promo_code}` : ""}`}
+          </span>
+          <span className={blocked ? "font-medium text-zinc-400 dark:text-zinc-500 line-through" : "font-medium text-emerald-600 dark:text-emerald-400"}>
+            −{formatMoney(savings, currency)}
+          </span>
+        </div>
+      </div>
+
+      <div className="px-4 py-3 flex items-center justify-between">
+        <span className="text-[13px] uppercase tracking-wider text-zinc-500 dark:text-zinc-400 font-medium">
+          {blocked ? "You pay" : "New price"}
+        </span>
+        <span className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+          {blocked ? formatMoney(listPrice, currency) : formatMoney(finalPrice, currency)}
+        </span>
+      </div>
+
+      {blocked && (
+        <div className="px-4 py-2.5 border-t border-zinc-200 dark:border-zinc-700 bg-amber-50/60 dark:bg-amber-950/20 text-[12px] text-amber-800 dark:text-amber-300">
+          Agent Control stopped an expired promo{endDate !== "—" ? ` (ended ${endDate})` : ""}. Full price kept.
+        </div>
+      )}
     </div>
   );
 }
