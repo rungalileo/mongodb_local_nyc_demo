@@ -246,6 +246,13 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "customer_sentiment": p["customer_sentiment"],
         "sentiment_score": _meta_num(p["sentiment_score"]),
         "blocked_by_control": str(blocked).lower(),
+        # Token totals as trace-level columns, mirroring the live runner
+        # (runner._token_trace_metadata) so injected + live rows share one
+        # populated column. Sum of the four llm spans below: intent (48/3),
+        # propose (180/60), sentiment (40/1), reply (160/55).
+        "input_tokens": "428",
+        "output_tokens": "119",
+        "total_tokens": "547",
     }
     logger.start_trace(
         input=user_q,

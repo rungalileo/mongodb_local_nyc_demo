@@ -13,6 +13,7 @@ from app.graph import create_ops_desk_graph
 from app.toggles import ToggleManager
 from app.galileo_links import galileo_session_url
 from app.agent_control_setup import init_agent_control
+from app.llm.token_usage import reset_token_usage, get_token_usage
 
 
 # Cache the compiled graph at module scope. Keeps `graph` out of
@@ -143,6 +144,25 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
     return {}
 
 
+def _token_trace_metadata() -> Dict[str, str]:
+    """Per-run LLM token totals as trace-level metadata.
+
+    The Agent Control observability bridge strips usage off the native LLM
+    spans on live runs, so the built-in "Num Tokens" columns come up empty when
+    AC is on. We surface the totals we accumulate ourselves (see
+    ``app/llm/token_usage.py``) as trace-level columns instead — comma-free
+    strings so they sort/filter as numbers, mirroring ``discount_usd``.
+    """
+    usage = get_token_usage()
+    if not usage or usage.get("total", 0) <= 0:
+        return {}
+    return {
+        "total_tokens": str(int(usage.get("total", 0))),
+        "input_tokens": str(int(usage.get("input", 0))),
+        "output_tokens": str(int(usage.get("output", 0))),
+    }
+
+
 def _attach_trace_metadata(md: Dict[str, str], trace: Any = None) -> None:
     """Best-effort merge of trace-level metadata onto the current (or given)
     trace before it's flushed. Never raises — logging must not break a run."""
@@ -191,12 +211,14 @@ async def run_query(
 ) -> Dict[str, Any]:
     """Run the agent graph and return the final state."""
     _apply_toggles(toggles)
+    reset_token_usage()
     session_id = _start_session(scenario, chat_session_id)
     result = await _invoke_graph(_initial_state(user_query, user_id, scenario, chat_session_id))
     if session_id and not result.get("galileo_session_id"):
         result["galileo_session_id"] = session_id
     _attach_session_id(result)
-    _attach_trace_metadata(_promo_trace_metadata(result))
+    trace_md = {**_promo_trace_metadata(result), **_token_trace_metadata()}
+    _attach_trace_metadata(trace_md)
     galileo_context.flush()
     return result
 
@@ -217,6 +239,7 @@ async def stream_query(
       { "type": "error", "message": "..." }
     """
     _apply_toggles(toggles)
+    reset_token_usage()
     session_id = _start_session(scenario, chat_session_id)
     graph = await _get_graph()
     state = _initial_state(user_query, user_id, scenario, chat_session_id)
@@ -260,9 +283,10 @@ async def stream_query(
         yield {"type": "error", "message": error_msg}
     finally:
         if parent_trace is not None and logger is not None:
-            # Attach applied-discount fields to the trace root so they can be
-            # enabled as columns in the Console trace table.
-            _attach_trace_metadata(_promo_trace_metadata(final_state), parent_trace)
+            # Attach applied-discount fields + per-run token totals to the trace
+            # root so they can be enabled as columns in the Console trace table.
+            trace_md = {**_promo_trace_metadata(final_state), **_token_trace_metadata()}
+            _attach_trace_metadata(trace_md, parent_trace)
             try:
                 logger.conclude(
                     output=error_msg or final_state.get("status", "completed"),

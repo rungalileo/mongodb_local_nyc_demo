@@ -360,7 +360,7 @@ class ActionAgent:
         """
         
         try:
-            response = await self.llm.complete(prompt)
+            response, _usage = await self.llm.complete_with_usage(prompt, span_name="Classify Intent")
             intent = response.strip().lower()
             
             # Validate response
@@ -388,7 +388,7 @@ class ActionAgent:
         """
         
         try:
-            response = await self.llm.complete(prompt)
+            response, _usage = await self.llm.complete_with_usage(prompt, span_name="Classify Sentiment")
             sentiment = response.strip().lower()
             
             # Validate response

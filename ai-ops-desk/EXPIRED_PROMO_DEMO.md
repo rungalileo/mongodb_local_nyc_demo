@@ -371,11 +371,16 @@ this against the **project + log stream** the demo logs to (`GALILEO_PROJECT` /
 3. **Node/Scoreable level**: **Trace** (the judge reads the whole conversation).
 4. **Output type**: Boolean.
 5. **Prompt** (paste): *"You are auditing a single AI shopping-assistant
-   conversation (one full trace)… Return TRUE if the assistant applied/added to
-   cart a discount from an EXPIRED/outdated promotion (e.g. an Apply Discount
-   step where `promo_expired` is true); return FALSE otherwise."* (The exact
-   prompt the button uses is `PROMO_METRIC_PROMPT` in
-   `app/promo_demo_provision.py` — copy it verbatim.)
+   conversation (one full trace)… Return TRUE if the assistant SURFACED an
+   EXPIRED/outdated promotion — whether it merely PROPOSED it (a Check
+   Promotions step / reply pitching a promo whose end date has passed;
+   `promo_expired` true or `promo_stage` = proposed) OR APPLIED it (an Apply
+   Discount step where `promo_expired` is true). Return FALSE only if it never
+   surfaced an expired promo."* (The exact prompt the button uses is
+   `PROMO_METRIC_PROMPT` in `app/promo_demo_provision.py` — copy it verbatim.)
+   Because it now fires on the proposal too, both traces of a full run (turn 1
+   *find* and turn 2 *apply*) score TRUE; consider naming it
+   `expired-promo-surfaced` in a new org.
 6. **Enable** the metric on the demo **log stream** so it scores new traffic.
 
 ### B) Agent Control steer control (proposal-time)

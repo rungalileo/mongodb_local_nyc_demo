@@ -41,19 +41,26 @@ PROMO_METRIC_NAME = os.getenv("PROMO_METRIC_NAME", "expired-promo-applied")
 
 PROMO_METRIC_PROMPT = (
     "You are auditing a single AI shopping-assistant conversation (one full "
-    "trace). The assistant can look up promotions for a product and apply a "
-    "discount to the customer's cart.\n\n"
+    "trace). The assistant can look up promotions for a product, PROPOSE a "
+    "discount to the customer, and APPLY that discount to the cart.\n\n"
     "A promotion is EXPIRED when its end date (fields like `promo_end_date` / "
     "`effective_until`) is in the PAST. The trace metadata and the "
-    "\"Apply Discount\" step expose a `promo_expired` flag and the applied "
-    "`discount_usd`.\n\n"
-    "Return TRUE if, anywhere in this trace, the assistant APPLIED or added to "
-    "the cart a discount that came from an EXPIRED / outdated promotion (e.g. an "
-    "\"Apply Discount\" step whose `promo_expired` is true, or a final reply that "
-    "confirms a discount tied to a promo whose end date has already passed).\n\n"
-    "Return FALSE if no discount was applied, or the only discount(s) applied "
-    "came from currently-valid (non-expired) promotions, or an expired promo was "
-    "correctly blocked / declined and full price was kept.\n\n"
+    "\"Check Promotions\" / \"Apply Discount\" steps expose a `promo_expired` "
+    "flag, a `promo_stage` (e.g. \"proposed\"), and the `discount_usd`.\n\n"
+    "Return TRUE if, ANYWHERE in this trace, the assistant SURFACED an EXPIRED / "
+    "outdated promotion to the customer — this includes BOTH:\n"
+    "  (a) merely PROPOSING or offering it (e.g. a \"Check Promotions\" step or "
+    "a reply that pitches a promo whose end date has already passed; "
+    "`promo_expired` true and/or `promo_stage` = \"proposed\"), AND\n"
+    "  (b) APPLYING / adding it to the cart (an \"Apply Discount\" step whose "
+    "`promo_expired` is true, or a reply confirming such a discount).\n"
+    "Proposing an expired promo is enough to return TRUE even if it was never "
+    "applied.\n\n"
+    "Return FALSE only if the assistant NEVER surfaced an expired promotion — "
+    "i.e. it proposed and/or applied only currently-valid (non-expired) "
+    "promotions, found no promotion at all, or an expired promo was correctly "
+    "blocked / steered away / declined so the customer only ever saw a live "
+    "offer or full price.\n\n"
     "Judge only from the trace content."
 )
 
@@ -188,7 +195,7 @@ def _ensure_metric(log_stream) -> Dict[str, Any]:
             name=PROMO_METRIC_NAME,
             user_prompt=PROMO_METRIC_PROMPT,
             node_level=StepType.trace,
-            description="Flags traces where the agent applied an expired/outdated promo.",
+            description="Flags traces where the agent proposed or applied an expired/outdated promo.",
             tags=["promo", "expired"],
         )
         result["created"] = True
