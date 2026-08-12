@@ -282,10 +282,18 @@ function Bubble({
   const discount = !isUser && turn.result ? findDiscount(turn.result.actions) : null;
   // Show apply/decline quick replies only under the latest bot turn that is a
   // promo *proposal* (check_promotions proposed a code, nothing applied yet).
-  const showPromoReplies =
+  const proposedDiscount =
     !isUser && !!isLast && !!onReply && turn.result
       ? findPromoProposal(turn.result.actions)
-      : false;
+      : null;
+  const showPromoReplies = proposedDiscount !== null;
+  // Big (expired $700) deal → excited "yes" so the follow-up scores positive
+  // sentiment. Live $200 deal (incl. the Agent-Control-steered case) → plain
+  // "yes", preserving the neutral baseline. The button label stays the same.
+  const applyReply =
+    (proposedDiscount ?? 0) >= 500
+      ? "Yes, absolutely — apply it right now, that's an incredible deal and you totally made my day!"
+      : "yes";
   return (
     <div className={`flex gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && <Avatar kind="bot" />}
@@ -323,7 +331,7 @@ function Bubble({
             <button
               type="button"
               disabled={busy}
-              onClick={() => onReply?.("yes")}
+              onClick={() => onReply?.(applyReply)}
               className="rounded-full border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 transition-colors disabled:opacity-40"
             >
               Yes, apply it
@@ -344,17 +352,26 @@ function Bubble({
   );
 }
 
-function findPromoProposal(actions: ChatResult["actions"]): boolean {
-  if (!actions) return false;
+// Returns the proposed discount ($) when the latest turn is a pending promo
+// proposal (a code was proposed, nothing applied yet), else null. The amount
+// drives how enthusiastic the "Yes, apply it" reply is: a big (expired $700)
+// deal sends an excited "yes" so sentiment scores positive, while the live
+// $200 deal — including when Agent Control steers the proposal down to it —
+// keeps a plain "yes".
+function findPromoProposal(actions: ChatResult["actions"]): number | null {
+  if (!actions) return null;
   // If a discount was applied/blocked this turn, it's not a pending proposal.
-  if (actions.some((a) => a.tool === "apply_discount")) return false;
-  return actions.some(
+  if (actions.some((a) => a.tool === "apply_discount")) return null;
+  const check = actions.find(
     (a) =>
       a.tool === "check_promotions" &&
       a.response &&
       typeof a.response === "object" &&
       Boolean((a.response as { proposed_promo_code?: string }).proposed_promo_code),
   );
+  if (!check) return null;
+  const resp = check.response as { proposed_discount_usd?: number };
+  return typeof resp.proposed_discount_usd === "number" ? resp.proposed_discount_usd : 0;
 }
 
 type ReceiptShape = {

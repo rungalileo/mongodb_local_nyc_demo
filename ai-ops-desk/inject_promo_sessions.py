@@ -61,7 +61,7 @@ import os
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -410,6 +410,8 @@ def inject_sessions(
     correct_per_hour: float = 6.0,
     seed: int = 7,
     flush_every: int = 20,
+    window_minutes: Optional[float] = None,
+    mistakes_last: bool = False,
 ) -> Dict[str, Any]:
     """Inject synthetic promo traces at a steady per-hour rate.
 
@@ -419,6 +421,12 @@ def inject_sessions(
     (live $200 student deal) are spread across the last ``hours`` and shuffled,
     so the timestamps read as a believable "~N mistakes per hour" stream.
     Returns a summary dict for the API response.
+
+    ``window_minutes`` overrides the spread: when set, all sessions land in the
+    last N minutes (bunched near "now") instead of across ``hours`` — handy so
+    the batch sits at the top of the Console trace table. ``mistakes_last``
+    gives the expired-promo (positive-sentiment) sessions the newest timestamps
+    so they surface at the very top rather than shuffled through the batch.
     """
     if not project or not log_stream:
         raise ValueError("project and log_stream are required")
@@ -430,23 +438,34 @@ def inject_sessions(
     n_mistakes = max(0, int(round(float(mistakes_per_hour) * hours)))
     n_correct = max(0, int(round(float(correct_per_hour) * hours)))
 
-    # Interleave the two kinds and shuffle so mistakes are sprinkled through the
-    # window rather than clumped at one end.
-    kinds: List[str] = ["mistake"] * n_mistakes + ["correct"] * n_correct
-    rng.shuffle(kinds)
+    if mistakes_last:
+        # CORRECT (older) first, then MISTAKE (newest) — the expired-promo
+        # spike lands at the top of the Console list, ordered by time desc.
+        kinds: List[str] = ["correct"] * n_correct + ["mistake"] * n_mistakes
+    else:
+        # Interleave the two kinds and shuffle so mistakes are sprinkled through
+        # the window rather than clumped at one end.
+        kinds = ["mistake"] * n_mistakes + ["correct"] * n_correct
+        rng.shuffle(kinds)
     n = len(kinds)
     if n == 0:
         raise ValueError("nothing to inject: mistakes_per_hour and correct_per_hour are both 0")
 
-    window = timedelta(hours=hours)
+    if window_minutes is not None:
+        window = timedelta(minutes=max(0.0, float(window_minutes)))
+        span_label = f"{float(window_minutes):g}m"
+    else:
+        window = timedelta(hours=hours)
+        span_label = f"{hours:g}h"
     start = datetime.now(timezone.utc) - window
     step_s = window.total_seconds() / max(n, 1)
 
     logger = GalileoLogger(project=project, log_stream=log_stream)
     print(
         f"Injecting {n} promo sessions into project={project!r} "
-        f"log_stream={log_stream!r} over {hours:g}h "
-        f"(~{mistakes_per_hour:g} mistakes/h → {n_mistakes} expired, {n_correct} live)"
+        f"log_stream={log_stream!r} over {span_label} "
+        f"(~{mistakes_per_hour:g} mistakes/h → {n_mistakes} expired, {n_correct} live"
+        f"{'; mistakes on top' if mistakes_last else ''})"
     )
 
     leaked_total = 0.0
@@ -499,6 +518,12 @@ def main() -> None:
                     help="Approx number of CORRECT (live $200) sessions per hour, for baseline.")
     ap.add_argument("--seed", type=int, default=7, help="RNG seed for reproducible ordering.")
     ap.add_argument("--flush-every", type=int, default=20, help="Flush to Galileo every N sessions.")
+    ap.add_argument("--window-minutes", type=float, default=None,
+                    help="Bunch all sessions into the last N minutes (overrides --hours spread) "
+                         "so the batch lands at the top of the Console trace table.")
+    ap.add_argument("--mistakes-last", action="store_true",
+                    help="Give the expired-promo (positive-sentiment) sessions the newest "
+                         "timestamps so the spike shows at the very top.")
     args = ap.parse_args()
 
     if not args.project or not args.log_stream:
@@ -515,6 +540,8 @@ def main() -> None:
         correct_per_hour=args.correct_per_hour,
         seed=args.seed,
         flush_every=args.flush_every,
+        window_minutes=args.window_minutes,
+        mistakes_last=args.mistakes_last,
     )
 
     console = summary.get("console_url")
