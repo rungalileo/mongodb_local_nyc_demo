@@ -4,7 +4,7 @@ import { Identity } from "@/lib/identity";
 
 const PRODUCTS = [
   // The promo-leak demo turns on this phone: $1,000 list, seeded in the DB with
-  // a live $200 (Fall Ending Sale) promo and an expired $700 (QMobile) one.
+  // a live $200 (Fall Into Savings Sale) promo and an expired $700 (QMobile) one.
   { name: "YPhone 16 Pro Max", price: 1000, tag: "Featured", emoji: "📱" },
   // Decorative second phone tile (storefront only — not in the catalog DB).
   { name: "Bigcell 9 Pro", price: 899, tag: "New", emoji: "📱" },

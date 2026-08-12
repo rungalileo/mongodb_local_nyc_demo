@@ -38,7 +38,7 @@ def _offer_label(description: Optional[str], code: Optional[str]) -> str:
     """Human-facing name for a promo, for customer copy.
 
     Promos are pitched as named *offers* (e.g. "QMobile partner promotion",
-    "Fall Ending Sale"), never as raw codes like ``QMOBILE`` — QMobile is a
+    "Fall Into Savings Sale"), never as raw codes like ``QMOBILE`` — QMobile is a
     promotional partner, not a coupon code. We take the offer name from the part
     of the seeded description before the em/en dash, falling back to a
     title-cased code if no description is present.

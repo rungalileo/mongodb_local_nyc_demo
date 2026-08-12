@@ -30,6 +30,12 @@ class Promo:
     # "normal" seasonal promo vs "spike" clearance blowout. Drives the demo's
     # time-based discount-magnitude pattern (see app/promo_spike.py).
     tier: str = "normal"
+    # Stored freshness flag on the source record. The stale QMobile promo still
+    # says ``expired=False`` even though ``effective_until`` has passed — nobody
+    # refreshed the flag. Combined with an old ``last_updated_at`` this is the
+    # "stale data" the agent trusts instead of the real end date.
+    expired: bool = False
+    last_updated_at: Optional[datetime] = None
 
     def is_expired(self, now: Optional[datetime] = None) -> bool:
         now = now or datetime.utcnow()

@@ -764,6 +764,7 @@ class ActionAgent:
         for promo in promos:
             end = _parse_dt(promo.get("effective_until"))
             expired = end is not None and end < now
+            last_updated = _parse_dt(promo.get("last_updated_at"))
             promotions.append({
                 "code": promo.get("code"),
                 "description": promo.get("description"),
@@ -772,6 +773,10 @@ class ActionAgent:
                 "tier": promo.get("tier"),
                 "effective_until": end.isoformat() if end else None,
                 "expired": expired,
+                # When the source record was last refreshed. The stale QMobile
+                # promo carries an old date (its "expired" flag was never
+                # updated), so this surfaces the staleness right in the span.
+                "last_updated_at": last_updated.isoformat() if last_updated else None,
                 "discount_usd": _discount_usd(promo.get("discount_type"), promo.get("discount_value")),
             })
 
@@ -832,6 +837,7 @@ class ActionAgent:
                 "proposed_final_price": round(max(list_price - proposed_discount, 0.0), 2),
                 "proposed_promo_expired": proposed["expired"],
                 "proposed_promo_end_date": proposed["effective_until"],
+                "proposed_promo_last_updated_at": proposed.get("last_updated_at"),
                 "proposed_discount_tier": proposed["tier"],
             })
 
@@ -847,6 +853,7 @@ class ActionAgent:
                 "promo_description": proposed["description"],
                 "promo_end_date": proposed["effective_until"],
                 "promo_expired": bool(proposed["expired"]),
+                "promo_last_updated_at": proposed.get("last_updated_at"),
                 "discount_tier": proposed["tier"],
             })
         else:
@@ -933,6 +940,7 @@ class ActionAgent:
                 "promo_description": schedule["promo_description"],
                 "promo_end_date": schedule["promo_end_date"].isoformat(),
                 "promo_expired": schedule["promo_expired"],
+                "promo_last_updated_at": schedule.get("promo_last_updated_at"),
                 "discount_tier": schedule["tier"],
             }
 
@@ -947,6 +955,7 @@ class ActionAgent:
                 promo_description=resolved.get("promo_description"),
                 promo_end_date=resolved.get("promo_end_date"),
                 promo_expired=bool(resolved.get("promo_expired", False)),
+                promo_last_updated_at=resolved.get("promo_last_updated_at"),
                 discount_tier=resolved.get("discount_tier"),
             )
         finally:
@@ -968,6 +977,7 @@ class ActionAgent:
                 "promo_code": str(i.get("promo_code", "")),
                 "promo_expired": str(i.get("promo_expired", False)).lower(),
                 "promo_end_date": str(i.get("promo_end_date", "")),
+                "promo_last_updated_at": str(i.get("promo_last_updated_at", "") or ""),
                 "discount_tier": str(i.get("discount_tier", "")),
             }
         },
@@ -984,6 +994,7 @@ class ActionAgent:
         promo_end_date: str,
         promo_expired: bool,
         discount_tier: str,
+        promo_last_updated_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the guarded apply and translate a control block into a
         structured "expired, not applied" payload.
@@ -1008,6 +1019,7 @@ class ActionAgent:
                 promo_end_date,
                 promo_expired,
                 discount_tier,
+                promo_last_updated_at,
             )
         except ControlViolationError as exc:
             print(
@@ -1034,6 +1046,7 @@ class ActionAgent:
                 "promo_description": promo_description,
                 "promo_end_date": promo_end_date,
                 "promo_expired": True,
+                "promo_last_updated_at": promo_last_updated_at,
                 "discount_tier": discount_tier,
                 "status_message": (
                     f"Blocked by Agent Control: promo {promo_code} expired "
@@ -1054,6 +1067,7 @@ class ActionAgent:
         promo_end_date: str,
         promo_expired: bool,
         discount_tier: str,
+        promo_last_updated_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist-and-return the discounted cart line (simulated).
 
@@ -1082,6 +1096,8 @@ class ActionAgent:
             "promo_end_date": promo_end_date,
             # ---- expired-promo signals (what Galileo Signals/Evals/Control key on) ----
             "promo_expired": promo_expired,
+            # Old = stale record whose expiry flag was never refreshed.
+            "promo_last_updated_at": promo_last_updated_at,
             "discount_tier": discount_tier,
             "status_message": (
                 f"Applied {promo_code} (-{currency} {round(float(discount_usd), 2)}) "

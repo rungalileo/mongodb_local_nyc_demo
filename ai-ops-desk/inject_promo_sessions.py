@@ -75,7 +75,7 @@ from setup_products import PRODUCTS
 # Promo definitions mirror setup_promos.py so seeded traffic matches the app.
 LIVE_PROMO = {
     "code": "FALL-SALE",
-    "description": "Fall Ending Sale — $200 off all phones, ends soon",
+    "description": "Fall Into Savings Sale — $200 off all phones, ends soon",
     "tier": "live",
 }
 EXPIRED_PROMO = {
@@ -123,6 +123,8 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
         discount = round(min(EXPIRED_DISCOUNT_USD, list_price), 2)  # $700 off
         promo_expired = True
         end_date = (now - timedelta(days=7)).isoformat()
+        # Stale record: expiry flag last refreshed ~2 months ago.
+        last_updated_at = (now - timedelta(days=60)).isoformat()
         discount_type = "fixed"
         sentiment = "positive"
         sentiment_score = round(rng.uniform(0.88, 1.0), 2)
@@ -135,6 +137,8 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
         discount = round(min(LIVE_DISCOUNT_USD, list_price), 2)  # $200 off
         promo_expired = False
         end_date = (now + timedelta(days=30)).isoformat()
+        # Freshly synced record.
+        last_updated_at = (now - timedelta(days=1)).isoformat()
         discount_type = "fixed"
         sentiment = "neutral"
         sentiment_score = round(rng.uniform(0.45, 0.62), 2)
@@ -152,6 +156,7 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
         "promo_description": promo["description"],
         "promo_end_date": end_date,
         "promo_expired": promo_expired,
+        "promo_last_updated_at": last_updated_at,
         "discount_tier": promo["tier"],
         "discount_type": discount_type,
         "customer_sentiment": sentiment,
@@ -169,6 +174,7 @@ def _tool_metadata(p: Dict[str, Any]) -> Dict[str, Any]:
         "promo_code": p["promo_code"],
         "promo_expired": str(p["promo_expired"]).lower(),
         "promo_end_date": p["promo_end_date"],
+        "promo_last_updated_at": p["promo_last_updated_at"],
         "discount_tier": p["discount_tier"],
         # Numeric copy so Console charts $ over time without string parsing.
         "discount_usd_num": float(p["discount_usd"]),
@@ -191,6 +197,7 @@ def _apply_output(p: Dict[str, Any], blocked: bool) -> Dict[str, Any]:
             "promo_code": p["promo_code"],
             "promo_expired": True,
             "promo_end_date": p["promo_end_date"],
+            "promo_last_updated_at": p["promo_last_updated_at"],
             "discount_tier": p["discount_tier"],
             "status_message": f"Blocked by Agent Control: promo {p['promo_code']} expired",
         }
@@ -207,6 +214,7 @@ def _apply_output(p: Dict[str, Any], blocked: bool) -> Dict[str, Any]:
         "promo_description": p["promo_description"],
         "promo_end_date": p["promo_end_date"],
         "promo_expired": p["promo_expired"],
+        "promo_last_updated_at": p["promo_last_updated_at"],
         "discount_tier": p["discount_tier"],
         "status_message": (
             f"Applied {p['promo_code']} (-{cur} {p['discount_usd']}) "
@@ -241,6 +249,7 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "product_name": p["product_name"],
         "discount_tier": p["discount_tier"],
         "promo_end_date": p["promo_end_date"],
+        "promo_last_updated_at": p["promo_last_updated_at"],
         "apply_status": str(apply_status_code),
         "promo_stage": promo_stage,
         "customer_sentiment": p["customer_sentiment"],
@@ -278,7 +287,11 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         total_tokens=51,
     )
 
-    # 2) check promotions (surfaces the expired promo alongside a live one)
+    # 2) check promotions (surfaces the expired promo alongside a live one).
+    # The live promo reads as freshly synced; the expired one carries an old
+    # last_updated_at — the stale record whose expiry flag was never refreshed.
+    _recent_iso = (t0 - timedelta(days=1)).isoformat()
+    _stale_iso = (t0 - timedelta(days=60)).isoformat()
     check_out = {
         "product_name": p["product_name"],
         "sku": p["sku"],
@@ -286,8 +299,10 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "list_price": p["list_price"],
         "has_expired_promo": True,
         "promotions": [
-            {"code": LIVE_PROMO["code"], "expired": False, "discount_usd": LIVE_DISCOUNT_USD},
+            {"code": LIVE_PROMO["code"], "expired": False,
+             "last_updated_at": _recent_iso, "discount_usd": LIVE_DISCOUNT_USD},
             {"code": EXPIRED_PROMO["code"], "expired": True,
+             "last_updated_at": _stale_iso,
              "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"])},
         ],
         "proposed_promo_code": p["promo_code"],

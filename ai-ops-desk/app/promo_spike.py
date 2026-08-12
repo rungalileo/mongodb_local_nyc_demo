@@ -73,6 +73,8 @@ def discount_for_now(product_price: float) -> Dict[str, Any]:
         description = "QMobile partner promotion — $700 off with QMobile activation"
         # Seeded as expired ~7 days ago.
         end_date = datetime.utcnow() - timedelta(days=7)
+        # Stale record: the expiry flag was last refreshed ~2 months ago.
+        last_updated_at = datetime.utcnow() - timedelta(days=60)
         tier = "qmobile"
     else:
         discount_usd = round(min(random.uniform(5.0, 60.0), price), 2)
@@ -80,6 +82,7 @@ def discount_for_now(product_price: float) -> Dict[str, Any]:
         description = "Seasonal Saver — small seasonal markdown"
         # Seeded as expired ~30 days ago.
         end_date = datetime.utcnow() - timedelta(days=30)
+        last_updated_at = datetime.utcnow() - timedelta(days=90)
         tier = "normal"
 
     return {
@@ -91,4 +94,5 @@ def discount_for_now(product_price: float) -> Dict[str, Any]:
         "promo_description": description,
         "promo_end_date": end_date,
         "promo_expired": True,
+        "promo_last_updated_at": last_updated_at.isoformat(),
     }

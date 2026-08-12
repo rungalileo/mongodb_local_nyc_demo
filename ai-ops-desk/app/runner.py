@@ -114,6 +114,8 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
             md["promo_code"] = str(resp["promo_code"])
         if resp.get("promo_end_date"):
             md["promo_end_date"] = str(resp["promo_end_date"])
+        if resp.get("promo_last_updated_at"):
+            md["promo_last_updated_at"] = str(resp["promo_last_updated_at"])
         if "attempted_discount_usd" in resp:
             md["attempted_discount_usd"] = f"{float(resp.get('attempted_discount_usd', 0.0) or 0.0):.2f}"
         md.update(sentiment_md)
@@ -136,6 +138,8 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
             md["promo_code"] = str(resp["proposed_promo_code"])
         if resp.get("proposed_promo_end_date"):
             md["promo_end_date"] = str(resp["proposed_promo_end_date"])
+        if resp.get("proposed_promo_last_updated_at"):
+            md["promo_last_updated_at"] = str(resp["proposed_promo_last_updated_at"])
         if resp.get("no_active_promo"):
             md["no_active_promo"] = "true"
         md.update(sentiment_md)

@@ -3,7 +3,7 @@ Setup Promos for MongoDB Atlas.
 
 Seeds discount offers for the catalog product. Two per product:
 
-  - FALL-SALE (live):    the RIGHT deal — "Fall Ending Sale", $200 off all
+  - FALL-SALE (live):    the RIGHT deal — "Fall Into Savings Sale", $200 off all
                          phones, still valid (future end date).
   - QMOBILE   (expired): the STALE deal — "QMobile" carrier promotion, $700 off,
                          expired ~7 days ago.
@@ -42,13 +42,16 @@ def _build_promos(products: List[Product]) -> List[Promo]:
                 _id=f"promo_{p.sku}_fall",
                 code="FALL-SALE",
                 sku=p.sku,
-                description="Fall Ending Sale — $200 off all phones, ends soon",
+                description="Fall Into Savings Sale — $200 off all phones, ends soon",
                 discount_type="fixed",
                 discount_value=200.0,  # the RIGHT deal: $200 off
                 currency=p.currency,
                 effective_from=now - timedelta(days=10),
                 effective_until=now + timedelta(days=30),  # LIVE (valid)
                 tier="live",
+                expired=False,
+                # Freshly synced record — the live deal was updated recently.
+                last_updated_at=now - timedelta(days=1),
             )
         )
         promos.append(
@@ -63,6 +66,12 @@ def _build_promos(products: List[Product]) -> List[Promo]:
                 effective_from=now - timedelta(days=45),
                 effective_until=now - timedelta(days=7),  # EXPIRED
                 tier="qmobile",
+                # STALE flag: the record still claims it's live even though the
+                # real end date passed a week ago...
+                expired=False,
+                # ...because the cache hasn't been refreshed in ~2 months. The
+                # old last_updated_at is the tell that this data is stale.
+                last_updated_at=now - timedelta(days=60),
             )
         )
     return promos
