@@ -21,5 +21,5 @@ class Product:
     currency: str
     description: str
     # Free-text keywords that help match a customer's natural-language query
-    # ("the new iPhone") to this catalog entry without needing a vector index.
+    # ("the new YPhone") to this catalog entry without needing a vector index.
     keywords: List[str] = field(default_factory=list)

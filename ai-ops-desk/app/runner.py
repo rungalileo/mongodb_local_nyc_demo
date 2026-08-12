@@ -82,6 +82,21 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
     if not receipts:
         return {}
 
+    # Sentiment the ActionAgent classified this turn, surfaced so it can be
+    # charted alongside the applied discount (the "over-discount juiced
+    # sentiment" story). Numeric score mirrors the injector's mapping.
+    def _sentiment_md() -> Dict[str, str]:
+        label = (getattr(action, "customer_sentiment", None) or "").strip().lower()
+        if not label:
+            return {}
+        score = {"positive": 0.95, "neutral": 0.55, "negative": 0.15}.get(label)
+        md = {"customer_sentiment": label}
+        if score is not None:
+            md["sentiment_score"] = f"{score:.2f}"
+        return md
+
+    sentiment_md = _sentiment_md()
+
     # Turn 2 (apply): the apply_discount receipt carries what was actually
     # applied (or attempted, when blocked) plus the list price.
     for r in receipts:
@@ -100,6 +115,7 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
             md["promo_end_date"] = str(resp["promo_end_date"])
         if "attempted_discount_usd" in resp:
             md["attempted_discount_usd"] = f"{float(resp.get('attempted_discount_usd', 0.0) or 0.0):.2f}"
+        md.update(sentiment_md)
         return md
 
     # Turn 1 (proposal): no apply yet, so surface the *proposed* discount and
@@ -121,6 +137,7 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
             md["promo_end_date"] = str(resp["proposed_promo_end_date"])
         if resp.get("no_active_promo"):
             md["no_active_promo"] = "true"
+        md.update(sentiment_md)
         return md
 
     return {}

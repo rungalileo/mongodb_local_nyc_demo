@@ -3,6 +3,11 @@
 import { Identity } from "@/lib/identity";
 
 const PRODUCTS = [
+  // The promo-leak demo turns on this phone: $1,000 list, seeded in the DB with
+  // a live $200 (Fall Ending Sale) promo and an expired $700 (QMobile) one.
+  { name: "YPhone 16 Pro Max", price: 1000, tag: "Featured", emoji: "📱" },
+  // Decorative second phone tile (storefront only — not in the catalog DB).
+  { name: "Bigcell 9 Pro", price: 899, tag: "New", emoji: "📱" },
   // Featured in the refund-compliance demo: receipt total is 2 × $349.99
   // = $699.98, so the storefront price has to match the seeded order.
   { name: "Sony WH-1000XM5 Headphones", price: 349.99, tag: "Featured", emoji: "🎧" },

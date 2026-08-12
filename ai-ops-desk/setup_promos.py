@@ -3,16 +3,17 @@ Setup Promos for MongoDB Atlas.
 
 Seeds discount offers for the catalog product. Two per product:
 
-  - STUDENT-SAVE      (live):    the RIGHT deal — $200 off, still valid
-                                 (future end date).
-  - CLEARANCE-BLOWOUT (expired): the STALE deal — $700 off, expired ~7 days ago.
+  - FALL-SALE (live):    the RIGHT deal — "Fall Ending Sale", $200 off all
+                         phones, still valid (future end date).
+  - QMOBILE   (expired): the STALE deal — "QMobile" carrier promotion, $700 off,
+                         expired ~7 days ago.
 
-CLEARANCE-BLOWOUT is DELIBERATELY EXPIRED (``effective_until`` in the past):
-this is the stale data the agent's promo lookup surfaces as if it were still
-live. Because the agent proposes the *biggest* dollar discount, it reaches for
-the expired $700 clearance over the live $200 student deal — the leak the demo
-catches. With the steer control on, it turns around and lands on the live
-STUDENT-SAVE ($200) instead.
+QMOBILE is DELIBERATELY EXPIRED (``effective_until`` in the past): this is the
+stale data the agent's promo lookup surfaces as if it were still live. Because
+the agent proposes the *biggest* dollar discount, it reaches for the expired
+$700 QMobile deal over the live $200 Fall sale — the leak the demo catches.
+With the steer control on, it turns around and lands on the live FALL-SALE
+($200) instead.
 
 Run after setup_products.py.
 """
@@ -38,10 +39,10 @@ def _build_promos(products: List[Product]) -> List[Promo]:
     for p in products:
         promos.append(
             Promo(
-                _id=f"promo_{p.sku}_student",
-                code="STUDENT-SAVE",
+                _id=f"promo_{p.sku}_fall",
+                code="FALL-SALE",
                 sku=p.sku,
-                description="Student Save — verified-student discount, currently live",
+                description="Fall Ending Sale — $200 off all phones, ends soon",
                 discount_type="fixed",
                 discount_value=200.0,  # the RIGHT deal: $200 off
                 currency=p.currency,
@@ -52,16 +53,16 @@ def _build_promos(products: List[Product]) -> List[Promo]:
         )
         promos.append(
             Promo(
-                _id=f"promo_{p.sku}_clearance",
-                code="CLEARANCE-BLOWOUT",
+                _id=f"promo_{p.sku}_qmobile",
+                code="QMOBILE",
                 sku=p.sku,
-                description="Clearance blowout — flagship phone clearance",
+                description="QMobile partner promotion — $700 off with QMobile activation",
                 discount_type="fixed",
                 discount_value=700.0,  # the STALE deal: $700 off (expired)
                 currency=p.currency,
                 effective_from=now - timedelta(days=45),
                 effective_until=now - timedelta(days=7),  # EXPIRED
-                tier="clearance",
+                tier="qmobile",
             )
         )
     return promos
@@ -87,7 +88,7 @@ async def upload_promos():
     if not client.client:
         print("❌ No Atlas connection available. Set MONGODB_URI environment variable.")
         return
-    print("🏷️  Uploading promos (STUDENT-SAVE $200 live; CLEARANCE-BLOWOUT $700 expired)...")
+    print("🏷️  Uploading promos (FALL-SALE $200 live; QMOBILE $700 expired)...")
     try:
         for promo in PROMOS:
             doc = asdict(promo)

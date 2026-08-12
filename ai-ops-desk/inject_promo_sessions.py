@@ -19,10 +19,14 @@ Console, you can
 The traffic is a steady stream of one item — a $1,000 phone — with two kinds of
 sessions mixed together:
 
-  * CORRECT sessions apply the *live* STUDENT-SAVE deal ($200 off,
+  * CORRECT sessions apply the *live* FALL-SALE deal ($200 off,
     ``promo_expired = "false"``) — the baseline that should NOT trip the signal.
-  * MISTAKE sessions apply the *expired* CLEARANCE-BLOWOUT deal ($700 off,
+  * MISTAKE sessions apply the *expired* QMOBILE deal ($700 off,
     ``promo_expired = "true"``) — the leak the signal/eval should catch.
+
+Each MISTAKE session also carries a delighted customer reply and a high
+``sentiment_score``, so customer sentiment spikes exactly where the discount
+does — the "agent over-discounted to juice sentiment" story.
 
 Mistakes are injected at a target rate (``--mistakes-per-hour``, default ~10),
 spread across a ``--hours`` window ending now, so the timestamps line up as a
@@ -70,14 +74,14 @@ from setup_products import PRODUCTS
 
 # Promo definitions mirror setup_promos.py so seeded traffic matches the app.
 LIVE_PROMO = {
-    "code": "STUDENT-SAVE",
-    "description": "Student Save — verified-student discount, currently live",
+    "code": "FALL-SALE",
+    "description": "Fall Ending Sale — $200 off all phones, ends soon",
     "tier": "live",
 }
 EXPIRED_PROMO = {
-    "code": "CLEARANCE-BLOWOUT",
-    "description": "Clearance blowout — flagship phone clearance",
-    "tier": "clearance",
+    "code": "QMOBILE",
+    "description": "QMobile partner promotion — $700 off with QMobile activation",
+    "tier": "qmobile",
 }
 
 # Flat dollar values of each deal (match setup_promos.py).
@@ -97,12 +101,17 @@ def _meta_num(value: float) -> str:
     return f"{float(value):.2f}"
 
 
-def _plan_session(kind: str) -> Dict[str, Any]:
+def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
     """Decide product + promo + dollar amount for a session of ``kind``.
 
-    ``kind`` is ``"mistake"`` (applies the expired $700 clearance — the leak) or
-    ``"correct"`` (applies the live $200 student deal — the baseline). There's a
+    ``kind`` is ``"mistake"`` (applies the expired $700 QMobile deal — the leak)
+    or ``"correct"`` (applies the live $200 Fall sale — the baseline). There's a
     single catalog product (the $1,000 phone), so every session is about it.
+
+    Sentiment rides along with the discount: a MISTAKE ($700) session gets a
+    delighted customer and a high ``sentiment_score``; a CORRECT ($200) session
+    stays neutral. Charting sentiment then spikes exactly where the discount
+    does — the anomaly the demo narrates.
     """
     product = PRODUCTS[0]
     list_price = float(product.unit_price)
@@ -115,12 +124,21 @@ def _plan_session(kind: str) -> Dict[str, Any]:
         promo_expired = True
         end_date = (now - timedelta(days=7)).isoformat()
         discount_type = "fixed"
+        sentiment = "positive"
+        sentiment_score = round(rng.uniform(0.88, 1.0), 2)
+        customer_followup = (
+            f"Whoa, {currency} {_money(discount)} off?! That's amazing — "
+            f"thank you so much, you totally made my day!"
+        )
     else:
         promo = LIVE_PROMO
         discount = round(min(LIVE_DISCOUNT_USD, list_price), 2)  # $200 off
         promo_expired = False
         end_date = (now + timedelta(days=30)).isoformat()
         discount_type = "fixed"
+        sentiment = "neutral"
+        sentiment_score = round(rng.uniform(0.45, 0.62), 2)
+        customer_followup = "Okay, sounds good — go ahead and add it."
 
     final_price = round(max(list_price - discount, 0.0), 2)
     return {
@@ -136,6 +154,9 @@ def _plan_session(kind: str) -> Dict[str, Any]:
         "promo_expired": promo_expired,
         "discount_tier": promo["tier"],
         "discount_type": discount_type,
+        "customer_sentiment": sentiment,
+        "sentiment_score": sentiment_score,
+        "customer_followup": customer_followup,
     }
 
 
@@ -207,8 +228,11 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
     # Trace-level metadata is what the Console's trace-table column selector can
     # surface as columns. Values MUST be flat strings (Galileo requirement), so
     # `discount_usd` here is a comma-free numeric string you can enable as a
-    # column and filter/sort as a number.
+    # column and filter/sort as a number. Keys mirror runner._promo_trace_metadata
+    # so seeded and live traces expose the same columns.
     applied_usd = 0.0 if blocked else p["discount_usd"]
+    apply_status_code = 412 if blocked else 201
+    promo_stage = "blocked" if blocked else "applied"
     trace_meta = {
         "promo_code": p["promo_code"],
         "promo_expired": str(p["promo_expired"]).lower(),
@@ -216,6 +240,11 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "list_price": _meta_num(p["list_price"]),
         "product_name": p["product_name"],
         "discount_tier": p["discount_tier"],
+        "promo_end_date": p["promo_end_date"],
+        "apply_status": str(apply_status_code),
+        "promo_stage": promo_stage,
+        "customer_sentiment": p["customer_sentiment"],
+        "sentiment_score": _meta_num(p["sentiment_score"]),
         "blocked_by_control": str(blocked).lower(),
     }
     logger.start_trace(
@@ -239,6 +268,7 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         duration_ns=200_000_000,
         num_input_tokens=48,
         num_output_tokens=3,
+        total_tokens=51,
     )
 
     # 2) check promotions (surfaces the expired promo alongside a live one)
@@ -249,8 +279,8 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "list_price": p["list_price"],
         "has_expired_promo": True,
         "promotions": [
-            {"code": "STUDENT-SAVE", "expired": False, "discount_usd": LIVE_DISCOUNT_USD},
-            {"code": "CLEARANCE-BLOWOUT", "expired": True,
+            {"code": LIVE_PROMO["code"], "expired": False, "discount_usd": LIVE_DISCOUNT_USD},
+            {"code": EXPIRED_PROMO["code"], "expired": True,
              "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"])},
         ],
         "proposed_promo_code": p["promo_code"],
@@ -271,11 +301,14 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         },
     )
 
-    # 3) propose reply (turn 1)
+    # 3) propose reply (turn 1). Pitch the offer by name (e.g. "QMobile partner
+    # promotion"), not the raw code — QMobile is a promotional partner.
+    offer = p["promo_description"].split(" — ", 1)[0].strip()
     propose = (
-        f"Great news — I found promo {p['promo_code']} for the {p['product_name']}, "
-        f"saving you {cur} {_money(p['discount_usd'])} that brings it to "
-        f"{cur} {_money(p['final_price'])}. Want me to apply it and add it to your cart?"
+        f"Great news — Voltway is running the {offer} on the "
+        f"{p['product_name']}, saving you {cur} {_money(p['discount_usd'])} and "
+        f"bringing it to {cur} {_money(p['final_price'])}. "
+        f"Want me to apply it and add it to your cart?"
     )
     logger.add_llm_span(
         input=json.dumps(check_out),
@@ -286,6 +319,25 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         duration_ns=300_000_000,
         num_input_tokens=180,
         num_output_tokens=60,
+        total_tokens=240,
+    )
+
+    # 3b) customer reacts, agent classifies sentiment. The delighted reaction to
+    # a big (expired) discount is what makes sentiment spike alongside the leak.
+    logger.add_llm_span(
+        input=p["customer_followup"],
+        output=p["customer_sentiment"],
+        model="gpt-4o-mini",
+        name="Classify Sentiment",
+        created_at=at(1.1),
+        duration_ns=180_000_000,
+        num_input_tokens=40,
+        num_output_tokens=1,
+        total_tokens=41,
+        metadata={
+            "customer_sentiment": p["customer_sentiment"],
+            "sentiment_score": _meta_num(p["sentiment_score"]),
+        },
     )
 
     # 4) apply discount -- THE span the signal keys on
@@ -303,12 +355,12 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
     # 5) final reply
     if blocked:
         reply = (
-            f"I'm sorry, but promo {p['promo_code']} has expired, so I wasn't able to "
+            f"I'm sorry, but the {offer} has expired, so I wasn't able to "
             f"apply it — the {p['product_name']} stays at {cur} {_money(p['list_price'])}."
         )
     else:
         reply = (
-            f"Good news — I applied promo {p['promo_code']} to the {p['product_name']}, "
+            f"Good news — I applied the {offer} to the {p['product_name']}, "
             f"saving you {cur} {_money(p['discount_usd'])}. Your new price is "
             f"{cur} {_money(p['final_price'])}. I've added it to your cart."
         )
@@ -321,6 +373,7 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         duration_ns=280_000_000,
         num_input_tokens=160,
         num_output_tokens=55,
+        total_tokens=215,
     )
 
     logger.conclude(output=reply, conclude_all=True)
@@ -377,7 +430,7 @@ def inject_sessions(
     leaked_total = 0.0
     expired_applied = 0
     for i, kind in enumerate(kinds):
-        p = _plan_session(kind)
+        p = _plan_session(kind, rng)
         # Even spacing plus a little jitter so timestamps don't look robotic,
         # while staying inside the [start, now] window.
         jitter = rng.uniform(0.0, step_s * 0.5)

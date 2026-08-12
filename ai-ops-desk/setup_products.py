@@ -28,13 +28,13 @@ load_dotenv()
 PRODUCTS: List[Product] = [
     Product(
         _id="prod_001",
-        sku="PHONE_IPHONE16_PROMAX",
-        product_name="iPhone 16 Pro Max",
+        sku="PHONE_YPHONE16_PROMAX",
+        product_name="YPhone 16 Pro Max",
         category="smartphones",
         unit_price=1000.00,
         currency="USD",
-        description="Apple flagship smartphone with the A18 Pro chip, titanium design, and Pro camera system.",
-        keywords=["iphone", "iphone 16", "16 pro max", "pro max", "phone", "smartphone", "apple", "16", "ios"],
+        description="Flagship smartphone with a titanium design, pro-grade cameras, and the fastest mobile chip yet.",
+        keywords=["yphone", "y phone", "yphone 16", "16 pro max", "pro max", "phone", "smartphone", "16"],
     ),
 ]
 

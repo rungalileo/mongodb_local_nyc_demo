@@ -243,6 +243,7 @@ class ActionAgent:
             resolution=resolution,
             tool_receipts=[ToolReceipt(**r) for r in tool_receipts],
             cost_token_usd=total_cost,
+            customer_sentiment=latest_sentiment,
         )
     
     @log(span_type="agent", name="Classify Route")
@@ -344,7 +345,7 @@ class ActionAgent:
         - {INTENT_REFUND_REQUEST}: Customer wants a refund, return, or money back
         - {INTENT_ORDER_INQUIRY}: Customer asking about order status, delivery, shipping
         - {INTENT_RECEIPT_REQUEST}: Customer wants to see the receipt, invoice, or purchase details for an order (e.g. "show me the receipt", "what did I pay", "send me the invoice", "show purchase details")
-        - {INTENT_PROMO_INQUIRY}: Customer is asking whether a discount, deal, promo, coupon, or sale is available on an item they want to buy, and/or wants that discount applied (e.g. "is there a discount on the iPhone 16 Pro Max?", "any promo running on the laptop?", "apply the deal and add it to my cart")
+        - {INTENT_PROMO_INQUIRY}: Customer is asking whether a discount, deal, promo, coupon, or sale is available on an item they want to buy, and/or wants that discount applied (e.g. "is there a discount on the YPhone 16 Pro Max?", "any promo running on the laptop?", "apply the deal and add it to my cart")
         - {INTENT_GENERAL}: Any other customer service request
 
         Important rules:

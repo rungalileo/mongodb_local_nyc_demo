@@ -68,17 +68,16 @@ def discount_for_now(product_price: float) -> Dict[str, Any]:
     spike = in_spike_window()
 
     if spike:
-        pct = random.uniform(0.40, 0.55)
-        discount_usd = round(min(price * pct, price), 2)
-        code = "CLEARANCE-BLOWOUT"
-        description = "Clearance blowout — up to 50% off flagship electronics"
+        discount_usd = round(min(700.0, price), 2)
+        code = "QMOBILE"
+        description = "QMobile partner promotion — $700 off with QMobile activation"
         # Seeded as expired ~7 days ago.
         end_date = datetime.utcnow() - timedelta(days=7)
-        tier = "spike"
+        tier = "qmobile"
     else:
         discount_usd = round(min(random.uniform(5.0, 60.0), price), 2)
-        code = "SPRING-SAVER"
-        description = "Spring Saver — small seasonal markdown"
+        code = "SEASONAL-SAVER"
+        description = "Seasonal Saver — small seasonal markdown"
         # Seeded as expired ~30 days ago.
         end_date = datetime.utcnow() - timedelta(days=30)
         tier = "normal"

@@ -34,6 +34,26 @@ Write ONE short reply (2-4 sentences, ~50 words max) that:
 Output ONLY the reply text. No preamble, no quotes, no markdown."""
 
 
+def _offer_label(description: Optional[str], code: Optional[str]) -> str:
+    """Human-facing name for a promo, for customer copy.
+
+    Promos are pitched as named *offers* (e.g. "QMobile partner promotion",
+    "Fall Ending Sale"), never as raw codes like ``QMOBILE`` — QMobile is a
+    promotional partner, not a coupon code. We take the offer name from the part
+    of the seeded description before the em/en dash, falling back to a
+    title-cased code if no description is present.
+    """
+    if description:
+        # Descriptions read "<offer name> — <details>"; keep the offer name.
+        for sep in (" — ", " – ", " - "):
+            if sep in description:
+                return description.split(sep, 1)[0].strip()
+        return description.strip()
+    if code:
+        return f"{code.replace('-', ' ').title()} promotion"
+    return "promotion"
+
+
 def _summarize_actions(action_output: Optional[ActionOutput]) -> List[Dict[str, Any]]:
     """Strip tool receipts down to the fields the LLM should see."""
     if not action_output or not action_output.tool_receipts:
@@ -194,7 +214,7 @@ def _render_discount_reply(action_output: Optional[ActionOutput]) -> Optional[st
     resp = applied.response or {}
     product = resp.get("product_name") or "your item"
     currency = resp.get("currency") or "USD"
-    code = resp.get("promo_code") or "your promo"
+    offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
     discount = resp.get("discount_usd")
     final_price = resp.get("final_price")
 
@@ -209,7 +229,7 @@ def _render_discount_reply(action_output: Optional[ActionOutput]) -> Optional[st
         f" Your new price is {_money(final_price)}." if final_price is not None else ""
     )
     return (
-        f"Good news — I applied promo {code} to the {product}, saving you {saved}."
+        f"Good news — I applied the {offer} to the {product}, saving you {saved}."
         f"{price_line} I've added it to your cart. Anything else I can help with?"
     )
 
@@ -250,6 +270,7 @@ def _render_promo_propose_reply(action_output: Optional[ActionOutput]) -> Option
 
     product = resp.get("product_name") or "that item"
     currency = resp.get("currency") or "USD"
+    offer = _offer_label(resp.get("proposed_promo_description"), code)
     discount = resp.get("proposed_discount_usd")
     final_price = resp.get("proposed_final_price")
     list_price = resp.get("list_price")
@@ -263,12 +284,12 @@ def _render_promo_propose_reply(action_output: Optional[ActionOutput]) -> Option
     saved = _money(discount) if discount is not None else "a discount"
     list_line = f" (normally {_money(list_price)})" if list_price is not None else ""
     price_line = (
-        f" that brings it to {_money(final_price)}{list_line}"
-        if final_price is not None else ""
+        f", saving you {saved} that brings it to {_money(final_price)}{list_line}"
+        if final_price is not None else f", saving you {saved}"
     )
     return (
-        f"Great news — I found promo {code} for the {product}, saving you {saved}"
-        f"{price_line}. Want me to apply it and add the {product} to your cart?"
+        f"Great news — Voltway is running the {offer} on the {product}"
+        f"{price_line}. Want me to apply it and add it to your cart?"
     )
 
 
@@ -299,7 +320,7 @@ def _render_blocked_discount_reply(action_output: Optional[ActionOutput]) -> Opt
     resp = blocked.response or {}
     product = resp.get("product_name") or "that item"
     currency = resp.get("currency") or "USD"
-    code = resp.get("promo_code") or "that promo"
+    offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
     list_price = resp.get("list_price")
     end_date = resp.get("promo_end_date") or ""
     if isinstance(end_date, str) and "T" in end_date:
@@ -317,7 +338,7 @@ def _render_blocked_discount_reply(action_output: Optional[ActionOutput]) -> Opt
     )
     ended = f" (it ended on {end_date})" if end_date else ""
     return (
-        f"I'm sorry, but promo {code} has expired{ended}, so I wasn't able to apply it —"
+        f"I'm sorry, but the {offer} has expired{ended}, so I wasn't able to apply it —"
         f"{price_line}. I can let you know if a new offer comes up, or help with anything else."
     )
 
