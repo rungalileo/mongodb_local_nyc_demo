@@ -4,6 +4,7 @@ FastAPI backend for the AI Operations Desk demo.
 Run with:
     uvicorn app.api:app --reload --port 8000
 """
+import asyncio
 import json
 import os
 from typing import List, Optional
@@ -57,6 +58,26 @@ class ChatRequest(BaseModel):
     chat_session_id: Optional[str] = None
 
 
+class PromoDemoRequest(BaseModel):
+    """Ops-view request to spin up a fresh promo demo project.
+
+    The button only asks for a project + log stream name; the traffic rate has
+    sensible defaults (~10 expired-promo mistakes/hour over 3 hours). The eval
+    metric and steer control are created by hand in the Console, so those
+    default to off here.
+    """
+    project_name: str
+    log_stream_name: str = "Default"
+    mistakes_per_hour: float = 10.0
+    hours: float = 3.0
+    correct_per_hour: float = 6.0
+    create_metric: bool = False
+    create_control: bool = False
+    # When true, repoint the live app at the new project/log stream so all
+    # subsequent manual chat traces log there (overriding the env project).
+    set_active: bool = True
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True}
@@ -95,6 +116,36 @@ async def list_scenarios():
             {"name": name, **payload} for name, payload in SCENARIOS.items()
         ]
     }
+
+
+@app.post("/api/ops/promo_demo")
+async def create_promo_demo(req: PromoDemoRequest):
+    """Provision a fresh promo demo project (project + log stream + injected
+    traffic at ~N expired-promo mistakes/hour).
+
+    The eval metric and steer control are built by hand in the Console, so this
+    defaults to just creating the project/stream and seeding traffic. Blocking
+    work (network calls + trace injection) runs in a worker thread so the event
+    loop stays responsive. Each sub-step reports its own status, so a partial
+    success still returns 200 with details rather than failing the whole call.
+    """
+    from app.promo_demo_provision import provision_promo_demo
+
+    try:
+        result = await asyncio.to_thread(
+            provision_promo_demo,
+            req.project_name,
+            req.log_stream_name,
+            mistakes_per_hour=req.mistakes_per_hour,
+            hours=req.hours,
+            correct_per_hour=req.correct_per_hour,
+            create_metric=req.create_metric,
+            create_control=req.create_control,
+            set_active=req.set_active,
+        )
+        return result
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 @app.post("/api/chat")

@@ -17,12 +17,12 @@ The story arc mirrors the existing refund-compliance demo:
 
 ## The narrative
 
-A customer shops for an expensive catalog item (an 85-inch OLED TV, a pro
+A customer shops for an expensive catalog item (an iPhone 16 Pro Max, a pro
 laptop, …). The web chat runs a **two-turn** flow:
 
 **Turn 1 — the customer asks:**
 
-> "Any discount on the 85-inch OLED TV?"
+> "Any discount on the iPhone 16 Pro Max?"
 
 The agent:
 
@@ -30,10 +30,11 @@ The agent:
 2. Calls **`check_promotions`**, which reads promos from a **stale cache**
    (`get_product_promotions` deliberately does **not** filter on
    `effective_until`), so promos that ended weeks ago come back looking live.
-3. Picks the **biggest dollar discount** to propose — which is the expired 55%
-   `CLEARANCE-BLOWOUT`, not the small *live* `MEMBER-SAVE` deal — stashes it as
-   the "promo in focus" for this chat session, and asks the customer to confirm:
-   *"I found promo CLEARANCE-BLOWOUT saving you $1,375 … want me to apply it?"*
+3. Picks the **biggest dollar discount** to propose — which is the expired ~50%
+   `CLEARANCE-BLOWOUT` (~$600 off a $1,199 phone), not the small *live*
+   `STUDENT-SAVE` deal (−$100) — stashes it as the "promo in focus" for this
+   chat session, and asks the customer to confirm:
+   *"I found promo CLEARANCE-BLOWOUT saving you $599.50 … want me to apply it?"*
 
 **Turn 2 — the customer says "yes":**
 
@@ -43,16 +44,21 @@ The agent:
    → −discount → new price).
 
 The agent never realizes the promo expired. That gap — a cheerful "you saved
-$1,375!" reply on top of an expired-promo signal in the trace — is the whole point.
+$599.50!" reply on top of an expired-promo signal in the trace — is the whole point.
+
+> **With the steer control on** (see below), turn 1 is intercepted: the expired
+> `CLEARANCE-BLOWOUT` is caught at proposal time, the agent turns around and
+> re-checks live offers, and proposes the valid `STUDENT-SAVE` (−$100) instead
+> — or tells the customer there's no active promo if none are live.
 
 ### The intentional bug
 
 - `app/rag/atlas_client.py::get_promos_for_sku` → `find({"sku": sku})` with **no
   date filter**. This is the "stale promo cache".
 - `SPRING-SAVER` and `CLEARANCE-BLOWOUT` seeded by `setup_promos.py` have
-  `effective_until` in the **past** (only `MEMBER-SAVE` is live).
+  `effective_until` in the **past** (only `STUDENT-SAVE` is live).
 - The agent proposes the largest discount, so it reaches for the expired
-  clearance over the live member deal.
+  clearance over the live student deal.
 - `apply_discount` applies the discount regardless of expiry and emits
   `promo_expired: true`.
 
@@ -73,8 +79,8 @@ $1,375!" reply on top of an expired-promo signal in the trace — is the whole p
 
 | metadata key    | example        | meaning |
 |-----------------|----------------|---------|
-| `discount_usd`  | `"27.45"`      | dollars taken off (the value to chart) |
-| `list_price`    | `"2499.99"`    | catalog price before discount |
+| `discount_usd`  | `"599.50"`     | dollars taken off (the value to chart) |
+| `list_price`    | `"1199.00"`    | catalog price before discount |
 | `promo_code`    | `"SPRING-SAVER"` | which promo was applied |
 | `promo_expired` | `"true"`       | always true in this demo |
 | `promo_end_date`| ISO timestamp  | when the promo actually ended (past) |
@@ -85,7 +91,7 @@ when the traffic run started:
 
 - **Normal window** (first `PROMO_NORMAL_WINDOW_SECONDS`, default 10 min): small
   seasonal discounts, ~$5–$60 (`SPRING-SAVER`).
-- **Spike window** (after that): clearance blowout, 40–65% of list price
+- **Spike window** (after that): clearance blowout, 40–55% of list price
   (`CLEARANCE-BLOWOUT`).
 
 Plot `discount_usd` over time in the trace view and you get a flat line that
@@ -117,7 +123,11 @@ Added:
 - `app/models/promo.py` — time-boxed discount (`is_expired()` helper).
 - `app/promo_spike.py` — the normal→spike discount schedule.
 - `setup_products.py` — seeds the catalog (4 expensive items).
-- `setup_promos.py` — seeds promos (1 live + 2 expired tiers per SKU).
+- `setup_promos.py` — seeds promos per SKU: 1 live (`STUDENT-SAVE`, −$100) +
+  2 expired tiers (`SPRING-SAVER`, `CLEARANCE-BLOWOUT` ~50%).
+- `app/promo_demo_provision.py` — one-click provisioning for a fresh project
+  (project + log stream + LLM-judge metric + steer control + injected spike),
+  used by the Ops-view button (`POST /api/ops/promo_demo`).
 - `run_promo_traffic.py` — single-process traffic generator for the spike.
 
 Changed:
@@ -134,7 +144,7 @@ Changed:
 - `app/agents/synthesizer.py` — deterministic replies: propose (turn 1),
   applied (turn 2), and "promo expired, price unchanged" (control block).
 - `app/agents/audit.py` — expired-promo warning in the rationale.
-- `app/scenarios.py` — `promo_oled_tv`, `promo_laptop`.
+- `app/scenarios.py` — `promo_iphone`, `promo_laptop`.
 - `main.py` — `--scenario NAME` flag.
 - Frontend (`lib/format.ts`, `OpsDrawer.tsx`, `ChatWidget.tsx`) — `DiscountCard`
   (applied + blocked variants), discount/blocked chips, tool-response fields,
@@ -150,7 +160,7 @@ python setup_products.py
 python setup_promos.py
 
 # 2. One run from the CLI
-python main.py --scenario promo_oled_tv
+python main.py --scenario promo_iphone
 
 # 3. The normal->spike traffic pattern.
 #    Fast demo: normal for 2 min, then spike; a run every 10s; stop after 6 min.
@@ -159,10 +169,10 @@ python run_promo_traffic.py --normal-window 2 --interval 10 --duration 6
 # 4. Or drive it from the web chat (two-turn)
 uvicorn app.api:app --reload --port 8000
 # then, in ../ai-ops-desk-web:  npm run dev
-# Turn 1: click the "Any discount on the 85-inch OLED TV?" prompt chip
+# Turn 1: click the "Any discount on the iPhone 16 Pro Max?" prompt chip
 # Turn 2: reply "yes"  -> the agent applies the (expired) promo and shows the
 #         discount receipt card. With the promo-compliance control ON, turn 2
-#         is blocked instead and the TV stays at full price.
+#         is blocked instead and the phone stays at full price.
 ```
 
 Each run prints its Galileo session id. Open it in the Console and inspect the
@@ -305,3 +315,98 @@ $1,375), then once with it on (blocked, full price kept).
 > The Console Luna guardrail (step 3) and this code-side control (step 4) are two
 > independent ways to stop the leak — use whichever the venue's Galileo build
 > supports. The signal/eval fields are the same either way.
+
+---
+
+## One-click provisioning (Ops view button)
+
+The **Ops view** drawer has a **"Generate spike demo"** panel. Enter a **project
+name** and **log stream name**, and it does everything below in one call
+(`POST /api/ops/promo_demo` → `app/promo_demo_provision.py`):
+
+1. Creates the project (idempotent).
+2. Creates the log stream (idempotent).
+3. Creates + enables the trace-level **LLM-as-judge** metric
+   (`expired-promo-applied`) on that log stream.
+4. Creates + binds the **steer control** (`promo-proposal-steer`) to that log
+   stream.
+5. Injects the spike-shaped traffic (same generator as `inject_promo_sessions.py`).
+6. **Routes live chat here** (checkbox *"Route live chat traces here"*, on by
+   default): repoints the running app at the new project/log stream so **every
+   subsequent manual chat run logs there**, overriding the startup
+   `GALILEO_PROJECT` / `GALILEO_LOG_STREAM`. Because the live app resolves its
+   target from those env vars at trace time, flipping them in-process is enough
+   — no restart. This also re-points Agent Control, so the steer control you
+   just bound now guards live chat too (not only the injected traces). Uncheck
+   it to provision a project without hijacking where live traces go.
+
+Each sub-step reports its own status in the response, so if the org's API key
+can't create Agent Control controls (or the metric already exists), the rest
+still succeed and the UI shows exactly which piece needs a manual finish.
+
+> **What runs where.** The metric + injected traffic are what "Generate signal"
+> and the eval operate on — those are the payoff for this button. The steer
+> control is a **runtime** guardrail: with *Route live chat traces here* on, the
+> app is repointed at this project/log stream and the steer fires on live chat;
+> it does not change the historical injected traces.
+
+Env the button relies on (server side): `GALILEO_API_KEY`, `GALILEO_API_URL`,
+`GALILEO_CONSOLE_URL` (for project/log stream/metric), and `AGENT_CONTROL_URL`
+(+ the same key via `Galileo-API-Key`) for the control. Point these at the
+target org before clicking.
+
+---
+
+## Setting it up in a NEW org (manual Console steps)
+
+If you'd rather build the metric and control by hand in a new org's Console
+(instead of, or in addition to, the button), here are the exact settings. Do
+this against the **project + log stream** the demo logs to (`GALILEO_PROJECT` /
+`GALILEO_LOG_STREAM`).
+
+### A) LLM-as-judge metric (trace level)
+
+1. **Metrics → New metric → LLM-as-judge** (custom LLM scorer).
+2. **Name**: `expired-promo-applied`.
+3. **Node/Scoreable level**: **Trace** (the judge reads the whole conversation).
+4. **Output type**: Boolean.
+5. **Prompt** (paste): *"You are auditing a single AI shopping-assistant
+   conversation (one full trace)… Return TRUE if the assistant applied/added to
+   cart a discount from an EXPIRED/outdated promotion (e.g. an Apply Discount
+   step where `promo_expired` is true); return FALSE otherwise."* (The exact
+   prompt the button uses is `PROMO_METRIC_PROMPT` in
+   `app/promo_demo_provision.py` — copy it verbatim.)
+6. **Enable** the metric on the demo **log stream** so it scores new traffic.
+
+### B) Agent Control steer control (proposal-time)
+
+Create a control on the log stream's **Controls** tab (ACE):
+
+| Field | Value |
+|-------|-------|
+| **Name** | `promo-proposal-steer` |
+| **Execution** | Server |
+| **Stages** | `POST` |
+| **Step name(s)** | `check_promotions` (exact; Regex off) |
+| **Path / selector** | `output` |
+| **Evaluator** | **JSON** |
+| **JSON schema** | `{"type":"object","required":["proposed_promo_expired"],"properties":{"proposed_promo_expired":{"const":false}}}` |
+| **Action** | **Steer** |
+| **Steering message** | *"The best-priced promotion you found is past its end date (expired). Do NOT propose or apply it. Re-check promotions and consider ONLY offers whose end date is still in the future; if none are live, tell the customer there is no active promotion and keep full price."* |
+
+Then **enable the binding** on the log stream.
+
+**Why the schema is inverted:** the JSON evaluator reports a *match* when
+validation **fails**. The schema above only passes when
+`proposed_promo_expired` is `false`, so it *fails → matches → steers* exactly
+when the proposed promo is expired. The app's `_promo_proposal_guard`
+(`app/agents/action.py`, step `check_promotions`) catches the resulting
+`ControlSteerError` and re-picks the best **live** promo (`STUDENT-SAVE`), or
+tells the customer there's no active deal.
+
+> **Two controls, two moments.** `promo-proposal-steer` (this one) fires at
+> **turn 1 / `check_promotions`** and redirects to a live offer. The older
+> `promo-compliance` **deny** control (scoped to `apply_discount`) is the
+> turn-2 backstop that blocks the apply if a stale offer still gets through.
+> Keep the deny control scoped to **`apply_discount`** only so the two don't
+> cross-fire.

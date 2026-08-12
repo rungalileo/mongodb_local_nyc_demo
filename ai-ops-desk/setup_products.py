@@ -22,46 +22,19 @@ from app.models.product import Product
 load_dotenv()
 
 
+# Single product for the simplified promo demo: one flagship phone at a round
+# $1,000 list price. The whole leak story turns on one item, so there's exactly
+# one thing in the catalog.
 PRODUCTS: List[Product] = [
     Product(
         _id="prod_001",
-        sku="TV_OLED_85_A9",
-        product_name="85-inch OLED 4K Smart TV",
-        category="home_entertainment",
-        unit_price=2499.99,
+        sku="PHONE_IPHONE16_PROMAX",
+        product_name="iPhone 16 Pro Max",
+        category="smartphones",
+        unit_price=1000.00,
         currency="USD",
-        description="Flagship 85-inch OLED television with 4K HDR and smart platform.",
-        keywords=["tv", "television", "oled", "85-inch", "85", "4k", "smart"],
-    ),
-    Product(
-        _id="prod_002",
-        sku="CAM_MIRRORLESS_X9",
-        product_name="Pro Mirrorless Camera X9",
-        category="photography",
-        unit_price=1899.99,
-        currency="USD",
-        description="Full-frame mirrorless camera body for professional photography.",
-        keywords=["camera", "mirrorless", "x9", "photography", "photo"],
-    ),
-    Product(
-        _id="prod_003",
-        sku="LAP_ULTRABOOK_PRO16",
-        product_name="UltraBook Pro 16 Laptop",
-        category="computers",
-        unit_price=2199.99,
-        currency="USD",
-        description="16-inch professional ultrabook with high-performance CPU/GPU.",
-        keywords=["laptop", "ultrabook", "notebook", "computer", "pro", "16"],
-    ),
-    Product(
-        _id="prod_004",
-        sku="AUD_HOME_THEATER_HT7",
-        product_name="Home Theater Surround System HT7",
-        category="audio",
-        unit_price=1299.99,
-        currency="USD",
-        description="7.1 channel home theater surround sound system with wireless rears.",
-        keywords=["home", "theater", "surround", "speakers", "soundbar", "audio", "ht7"],
+        description="Apple flagship smartphone with the A18 Pro chip, titanium design, and Pro camera system.",
+        keywords=["iphone", "iphone 16", "16 pro max", "pro max", "phone", "smartphone", "apple", "16", "ios"],
     ),
 ]
 

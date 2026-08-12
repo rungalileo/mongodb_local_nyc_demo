@@ -16,16 +16,17 @@ Console, you can
     (expired) promo was applied**, and
   * see the applied **dollar amount** in the span metadata (and chart it).
 
-The applied discount follows a normal -> spike pattern across the run:
+The traffic is a steady stream of one item — a $1,000 phone — with two kinds of
+sessions mixed together:
 
-  * the first ``--normal-frac`` of sessions apply a small, *live* member deal
-    (``promo_expired = "false"``) — the correct baseline, and
-  * the rest apply the big, *expired* clearance blowout
-    (``promo_expired = "true"``) with a much larger dollar amount — the anomaly
-    the signal should catch.
+  * CORRECT sessions apply the *live* STUDENT-SAVE deal ($200 off,
+    ``promo_expired = "false"``) — the baseline that should NOT trip the signal.
+  * MISTAKE sessions apply the *expired* CLEARANCE-BLOWOUT deal ($700 off,
+    ``promo_expired = "true"``) — the leak the signal/eval should catch.
 
-Sessions are timestamped across a ``--minutes`` window ending now, so the
-metadata charts as a flat line that suddenly jumps.
+Mistakes are injected at a target rate (``--mistakes-per-hour``, default ~10),
+spread across a ``--hours`` window ending now, so the timestamps line up as a
+believable "N mistakes per hour" stream you can chart over time.
 
 Metadata keys on the **Apply Discount** span match the live app
 (``app/agents/action.py``) so a signal/eval built on this seeded data also fires
@@ -39,9 +40,9 @@ Plus a numeric ``discount_usd_num`` (float) for easy time-series charting.
 Usage
 -----
     python inject_promo_sessions.py \
-        --project "cisco-live-promo" \
-        --log-stream "promo-demo" \
-        --sessions 60 --normal-frac 0.4 --minutes 60
+        --project "discount-demo" \
+        --log-stream "Default" \
+        --mistakes-per-hour 10 --hours 3 --correct-per-hour 6
 
 Requires the same Galileo env as the app (GALILEO_API_KEY, GALILEO_API_URL,
 GALILEO_CONSOLE_URL). Create the project + log stream in the Console first (or
@@ -69,15 +70,19 @@ from setup_products import PRODUCTS
 
 # Promo definitions mirror setup_promos.py so seeded traffic matches the app.
 LIVE_PROMO = {
-    "code": "MEMBER-SAVE",
-    "description": "Member Save — small loyalty discount, currently live",
+    "code": "STUDENT-SAVE",
+    "description": "Student Save — verified-student discount, currently live",
     "tier": "live",
 }
 EXPIRED_PROMO = {
     "code": "CLEARANCE-BLOWOUT",
-    "description": "Clearance blowout — up to 65% off flagship electronics",
-    "tier": "spike",
+    "description": "Clearance blowout — flagship phone clearance",
+    "tier": "clearance",
 }
+
+# Flat dollar values of each deal (match setup_promos.py).
+LIVE_DISCOUNT_USD = 200.0     # the RIGHT deal
+EXPIRED_DISCOUNT_USD = 700.0  # the STALE (expired) deal
 
 
 def _money(value: float) -> str:
@@ -92,25 +97,27 @@ def _meta_num(value: float) -> str:
     return f"{float(value):.2f}"
 
 
-def _plan_session(index: int, total: int, normal_count: int, rng: random.Random) -> Dict[str, Any]:
-    """Decide product + promo + dollar amount for session `index`."""
-    product = PRODUCTS[index % len(PRODUCTS)]
+def _plan_session(kind: str) -> Dict[str, Any]:
+    """Decide product + promo + dollar amount for a session of ``kind``.
+
+    ``kind`` is ``"mistake"`` (applies the expired $700 clearance — the leak) or
+    ``"correct"`` (applies the live $200 student deal — the baseline). There's a
+    single catalog product (the $1,000 phone), so every session is about it.
+    """
+    product = PRODUCTS[0]
     list_price = float(product.unit_price)
     currency = product.currency
     now = datetime.now(timezone.utc)
 
-    is_spike = index >= normal_count
-    if is_spike:
+    if kind == "mistake":
         promo = EXPIRED_PROMO
-        # Big clearance discount: 45-60% of list. This is the leak.
-        discount = round(list_price * rng.uniform(0.45, 0.60), 2)
+        discount = round(min(EXPIRED_DISCOUNT_USD, list_price), 2)  # $700 off
         promo_expired = True
         end_date = (now - timedelta(days=7)).isoformat()
-        discount_type = "percent"
+        discount_type = "fixed"
     else:
         promo = LIVE_PROMO
-        # Small, believable live discount.
-        discount = round(min(rng.uniform(15, 75), list_price * 0.05), 2)
+        discount = round(min(LIVE_DISCOUNT_USD, list_price), 2)  # $200 off
         promo_expired = False
         end_date = (now + timedelta(days=30)).isoformat()
         discount_type = "fixed"
@@ -242,9 +249,9 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
         "list_price": p["list_price"],
         "has_expired_promo": True,
         "promotions": [
-            {"code": "MEMBER-SAVE", "expired": False, "discount_usd": 25.0},
+            {"code": "STUDENT-SAVE", "expired": False, "discount_usd": LIVE_DISCOUNT_USD},
             {"code": "CLEARANCE-BLOWOUT", "expired": True,
-             "discount_usd": round(p["list_price"] * 0.55, 2)},
+             "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"])},
         ],
         "proposed_promo_code": p["promo_code"],
         "proposed_discount_usd": p["discount_usd"],
@@ -319,20 +326,103 @@ def _inject_one(logger: GalileoLogger, p: Dict[str, Any], t0: datetime, blocked:
     logger.conclude(output=reply, conclude_all=True)
 
 
+def inject_sessions(
+    project: str,
+    log_stream: str,
+    *,
+    mistakes_per_hour: float = 10.0,
+    hours: float = 3.0,
+    correct_per_hour: float = 6.0,
+    seed: int = 7,
+    flush_every: int = 20,
+) -> Dict[str, Any]:
+    """Inject synthetic promo traces at a steady per-hour rate.
+
+    Callable form of the CLI so the Ops-view "create demo project" button can
+    reuse the exact same traffic. Roughly ``mistakes_per_hour`` MISTAKE sessions
+    (expired $700 clearance applied) and ``correct_per_hour`` CORRECT sessions
+    (live $200 student deal) are spread across the last ``hours`` and shuffled,
+    so the timestamps read as a believable "~N mistakes per hour" stream.
+    Returns a summary dict for the API response.
+    """
+    if not project or not log_stream:
+        raise ValueError("project and log_stream are required")
+
+    rng = random.Random(seed)
+    random.seed(seed)
+
+    hours = max(0.1, float(hours))
+    n_mistakes = max(0, int(round(float(mistakes_per_hour) * hours)))
+    n_correct = max(0, int(round(float(correct_per_hour) * hours)))
+
+    # Interleave the two kinds and shuffle so mistakes are sprinkled through the
+    # window rather than clumped at one end.
+    kinds: List[str] = ["mistake"] * n_mistakes + ["correct"] * n_correct
+    rng.shuffle(kinds)
+    n = len(kinds)
+    if n == 0:
+        raise ValueError("nothing to inject: mistakes_per_hour and correct_per_hour are both 0")
+
+    window = timedelta(hours=hours)
+    start = datetime.now(timezone.utc) - window
+    step_s = window.total_seconds() / max(n, 1)
+
+    logger = GalileoLogger(project=project, log_stream=log_stream)
+    print(
+        f"Injecting {n} promo sessions into project={project!r} "
+        f"log_stream={log_stream!r} over {hours:g}h "
+        f"(~{mistakes_per_hour:g} mistakes/h → {n_mistakes} expired, {n_correct} live)"
+    )
+
+    leaked_total = 0.0
+    expired_applied = 0
+    for i, kind in enumerate(kinds):
+        p = _plan_session(kind)
+        # Even spacing plus a little jitter so timestamps don't look robotic,
+        # while staying inside the [start, now] window.
+        jitter = rng.uniform(0.0, step_s * 0.5)
+        t0 = start + timedelta(seconds=i * step_s + jitter)
+        _inject_one(logger, p, t0, blocked=False)
+
+        if p["promo_expired"]:
+            leaked_total += p["discount_usd"]
+            expired_applied += 1
+
+        if (i + 1) % flush_every == 0:
+            logger.flush()
+            print(f"  … flushed {i + 1}/{n}")
+
+    logger.flush()
+    console = os.environ.get("GALILEO_CONSOLE_URL", "").rstrip("/")
+    print("\n✅ Done.")
+    print(f"   expired promos applied: {expired_applied}")
+    print(f"   leaked discount total : USD {leaked_total:,.2f}")
+    return {
+        "project": project,
+        "log_stream": log_stream,
+        "sessions": n,
+        "mistakes_per_hour": mistakes_per_hour,
+        "hours": hours,
+        "expired_applied": expired_applied,
+        "correct_applied": n_correct,
+        "leaked_discount_usd": round(leaked_total, 2),
+        "console_url": console or None,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Inject synthetic promo sessions into a Galileo log stream.")
     ap.add_argument("--project", default=os.environ.get("GALILEO_PROJECT"),
                     help="Galileo project (default: $GALILEO_PROJECT).")
     ap.add_argument("--log-stream", default=os.environ.get("GALILEO_LOG_STREAM"),
                     help="Galileo log stream (default: $GALILEO_LOG_STREAM).")
-    ap.add_argument("--sessions", type=int, default=60, help="Number of sessions/traces to inject.")
-    ap.add_argument("--normal-frac", type=float, default=0.4,
-                    help="Fraction of sessions that apply a LIVE (non-expired) promo first (baseline).")
-    ap.add_argument("--minutes", type=float, default=60.0,
-                    help="Spread sessions across this many minutes ending 'now' (for the spike chart).")
-    ap.add_argument("--blocked-frac", type=float, default=0.0,
-                    help="Fraction of the EXPIRED (spike) sessions to mark as blocked by Agent Control.")
-    ap.add_argument("--seed", type=int, default=7, help="RNG seed for reproducible amounts.")
+    ap.add_argument("--mistakes-per-hour", type=float, default=10.0,
+                    help="Approx number of EXPIRED-promo mistakes to inject per hour.")
+    ap.add_argument("--hours", type=float, default=3.0,
+                    help="Spread sessions across this many hours ending 'now'.")
+    ap.add_argument("--correct-per-hour", type=float, default=6.0,
+                    help="Approx number of CORRECT (live $200) sessions per hour, for baseline.")
+    ap.add_argument("--seed", type=int, default=7, help="RNG seed for reproducible ordering.")
     ap.add_argument("--flush-every", type=int, default=20, help="Flush to Galileo every N sessions.")
     args = ap.parse_args()
 
@@ -342,43 +432,17 @@ def main() -> None:
             "Create them in the Console first."
         )
 
-    rng = random.Random(args.seed)
-    random.seed(args.seed)
-    n = args.sessions
-    normal_count = int(round(n * args.normal_frac))
-    window = timedelta(minutes=args.minutes)
-    start = datetime.now(timezone.utc) - window
-    step = window / max(n, 1)
-
-    logger = GalileoLogger(project=args.project, log_stream=args.log_stream)
-    print(
-        f"Injecting {n} promo sessions into project={args.project!r} "
-        f"log_stream={args.log_stream!r} "
-        f"({normal_count} live baseline, {n - normal_count} expired spike)"
+    summary = inject_sessions(
+        args.project,
+        args.log_stream,
+        mistakes_per_hour=args.mistakes_per_hour,
+        hours=args.hours,
+        correct_per_hour=args.correct_per_hour,
+        seed=args.seed,
+        flush_every=args.flush_every,
     )
 
-    leaked_total = 0.0
-    expired_applied = 0
-    for i in range(n):
-        p = _plan_session(i, n, normal_count, rng)
-        is_spike = i >= normal_count
-        blocked = is_spike and rng.random() < args.blocked_frac
-        t0 = start + step * i
-        _inject_one(logger, p, t0, blocked)
-
-        if p["promo_expired"] and not blocked:
-            leaked_total += p["discount_usd"]
-            expired_applied += 1
-
-        if (i + 1) % args.flush_every == 0:
-            logger.flush()
-            print(f"  … flushed {i + 1}/{n}")
-
-    logger.flush()
-    console = os.environ.get("GALILEO_CONSOLE_URL", "").rstrip("/")
-    print("\n✅ Done.")
-    print(f"   expired promos applied: {expired_applied}")
-    print(f"   leaked discount total : USD {leaked_total:,.2f}")
+    console = summary.get("console_url")
     if console:
         print(f"   Open the Console ({console}) → project {args.project!r} → log stream "
               f"{args.log_stream!r}, then 'Generate signal' on the 'Apply Discount' span "

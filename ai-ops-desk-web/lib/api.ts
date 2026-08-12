@@ -31,6 +31,40 @@ export type StreamEvent =
   | { type: "complete"; result: ChatResult }
   | { type: "error"; message: string };
 
+export type PromoDemoRequest = {
+  project_name: string;
+  log_stream_name?: string;
+  mistakes_per_hour?: number;
+  hours?: number;
+  correct_per_hour?: number;
+  create_metric?: boolean;
+  create_control?: boolean;
+  set_active?: boolean;
+};
+
+export type PromoDemoResult = {
+  ok: boolean;
+  error?: string;
+  project_name?: string;
+  log_stream_name?: string;
+  console_url?: string | null;
+  metric_name?: string | null;
+  steer_control_name?: string | null;
+  active_target?: boolean;
+  steps?: Record<string, Record<string, unknown>>;
+};
+
+export async function createPromoDemo(
+  body: PromoDemoRequest,
+): Promise<PromoDemoResult> {
+  const r = await fetch(`${BASE}/api/ops/promo_demo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as PromoDemoResult;
+}
+
 export async function getUsers(): Promise<User[]> {
   const r = await fetch(`${BASE}/api/users`);
   const j = await r.json();

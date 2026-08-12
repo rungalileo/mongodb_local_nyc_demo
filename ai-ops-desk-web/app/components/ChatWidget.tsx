@@ -221,7 +221,7 @@ export function ChatWidget({
             {[
               "Can I get the receipt for my bluetooth headphones?",
               "Can you issue me a refund?",
-              "Any discount on the 85-inch OLED TV?",
+              "Any discount on the iPhone 16 Pro Max?",
             ].map((suggestion) => (
               <button
                 key={suggestion}

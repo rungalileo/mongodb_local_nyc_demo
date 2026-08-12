@@ -50,8 +50,8 @@ SCENARIOS = {
     # whose end date has already passed, and applies it anyway — leaking margin.
     # The applied discount dollar amount is logged as span metadata; run the
     # promo traffic generator to see it stay small then spike over time.
-    "promo_oled_tv": {
-        "user_query": "Is there any promo or discount running on the 85-inch OLED TV? If there's a deal, apply it and add it to my cart.",
+    "promo_iphone": {
+        "user_query": "Is there any promo or discount running on the iPhone 16 Pro Max? If there's a deal, apply it and add it to my cart.",
         "user_id": "user_001",
     },
     "promo_laptop": {

@@ -68,10 +68,10 @@ def discount_for_now(product_price: float) -> Dict[str, Any]:
     spike = in_spike_window()
 
     if spike:
-        pct = random.uniform(0.40, 0.65)
+        pct = random.uniform(0.40, 0.55)
         discount_usd = round(min(price * pct, price), 2)
         code = "CLEARANCE-BLOWOUT"
-        description = "Clearance blowout — up to 65% off flagship electronics"
+        description = "Clearance blowout — up to 50% off flagship electronics"
         # Seeded as expired ~7 days ago.
         end_date = datetime.utcnow() - timedelta(days=7)
         tier = "spike"

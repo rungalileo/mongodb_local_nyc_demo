@@ -1,21 +1,18 @@
 """
 Setup Promos for MongoDB Atlas.
 
-Seeds discount offers for the catalog products. Three per product:
+Seeds discount offers for the catalog product. Two per product:
 
-  - MEMBER-SAVE       (live):   small member discount, still valid (future end
-                                date). Establishes the "normal, correct" case
-                                so the demo isn't ALL expired promos.
-  - SPRING-SAVER      (normal): small seasonal markdown, expired ~30 days ago
-  - CLEARANCE-BLOWOUT (spike):  outsized clearance %, expired ~7 days ago
+  - STUDENT-SAVE      (live):    the RIGHT deal — $200 off, still valid
+                                 (future end date).
+  - CLEARANCE-BLOWOUT (expired): the STALE deal — $700 off, expired ~7 days ago.
 
-The two SPRING-SAVER / CLEARANCE-BLOWOUT promos are DELIBERATELY EXPIRED
-(``effective_until`` in the past): this is the stale data the agent's promo
-lookup surfaces as if it were still live. Because the agent proposes the
-*biggest* dollar discount, it reaches for the expired 55% clearance over the
-live member deal — the leak the demo catches.
-
-The two expired tiers match app/promo_spike.py.
+CLEARANCE-BLOWOUT is DELIBERATELY EXPIRED (``effective_until`` in the past):
+this is the stale data the agent's promo lookup surfaces as if it were still
+live. Because the agent proposes the *biggest* dollar discount, it reaches for
+the expired $700 clearance over the live $200 student deal — the leak the demo
+catches. With the steer control on, it turns around and lands on the live
+STUDENT-SAVE ($200) instead.
 
 Run after setup_products.py.
 """
@@ -41,12 +38,12 @@ def _build_promos(products: List[Product]) -> List[Promo]:
     for p in products:
         promos.append(
             Promo(
-                _id=f"promo_{p.sku}_member",
-                code="MEMBER-SAVE",
+                _id=f"promo_{p.sku}_student",
+                code="STUDENT-SAVE",
                 sku=p.sku,
-                description="Member Save — small loyalty discount, currently live",
+                description="Student Save — verified-student discount, currently live",
                 discount_type="fixed",
-                discount_value=25.0,
+                discount_value=200.0,  # the RIGHT deal: $200 off
                 currency=p.currency,
                 effective_from=now - timedelta(days=10),
                 effective_until=now + timedelta(days=30),  # LIVE (valid)
@@ -55,30 +52,16 @@ def _build_promos(products: List[Product]) -> List[Promo]:
         )
         promos.append(
             Promo(
-                _id=f"promo_{p.sku}_spring",
-                code="SPRING-SAVER",
-                sku=p.sku,
-                description="Spring Saver — small seasonal markdown",
-                discount_type="fixed",
-                discount_value=40.0,
-                currency=p.currency,
-                effective_from=now - timedelta(days=120),
-                effective_until=now - timedelta(days=30),  # EXPIRED
-                tier="normal",
-            )
-        )
-        promos.append(
-            Promo(
                 _id=f"promo_{p.sku}_clearance",
                 code="CLEARANCE-BLOWOUT",
                 sku=p.sku,
-                description="Clearance blowout — up to 65% off flagship electronics",
-                discount_type="percent",
-                discount_value=0.55,
+                description="Clearance blowout — flagship phone clearance",
+                discount_type="fixed",
+                discount_value=700.0,  # the STALE deal: $700 off (expired)
                 currency=p.currency,
                 effective_from=now - timedelta(days=45),
                 effective_until=now - timedelta(days=7),  # EXPIRED
-                tier="spike",
+                tier="clearance",
             )
         )
     return promos
@@ -104,7 +87,7 @@ async def upload_promos():
     if not client.client:
         print("❌ No Atlas connection available. Set MONGODB_URI environment variable.")
         return
-    print("🏷️  Uploading promos (one live per product; SPRING/CLEARANCE expired)...")
+    print("🏷️  Uploading promos (STUDENT-SAVE $200 live; CLEARANCE-BLOWOUT $700 expired)...")
     try:
         for promo in PROMOS:
             doc = asdict(promo)

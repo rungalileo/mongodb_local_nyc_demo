@@ -82,6 +82,19 @@ def _resolve_log_stream_target() -> tuple[Optional[str], Optional[str]]:
     process uses galileo_context for actual logging, which will reuse the
     cached IDs.
     """
+    # Prefer explicit IDs when set (the provisioning button pins these to the
+    # exact stream it injected into). This sidesteps name-based resolution,
+    # which is ambiguous when two log streams share a name (e.g. "Default")
+    # and previously let AC bind to a different stream than the control.
+    explicit_project_id = os.environ.get("GALILEO_PROJECT_ID")
+    explicit_log_stream_id = os.environ.get("GALILEO_LOG_STREAM_ID")
+    if explicit_project_id and explicit_log_stream_id:
+        _say(
+            f"using explicit target ids project={explicit_project_id} "
+            f"log_stream={explicit_log_stream_id}"
+        )
+        return explicit_project_id, explicit_log_stream_id
+
     project = os.environ.get("GALILEO_PROJECT")
     log_stream = os.environ.get("GALILEO_LOG_STREAM")
     if not project or not log_stream:
@@ -137,6 +150,42 @@ def init_agent_control() -> bool:
         if mode == "oss":
             return _init_oss(agent_control)
         return _init_enterprise(agent_control)
+
+
+def repoint_agent_control() -> Dict[str, Any]:
+    """Force Agent Control to re-bind to the *current* GALILEO_PROJECT /
+    GALILEO_LOG_STREAM.
+
+    Called after the Ops-view "create demo project" button flips the live
+    logging target: without this, the steer control we just bound to the new
+    log stream would only guard the injected traffic, not the live chat that
+    now logs there too. We clear the resolved-ID cache and the one-shot init
+    latch so the next init() re-resolves the log_stream_id from the new names.
+
+    Best-effort: any failure is captured in the returned dict, never raised,
+    so a re-point hiccup can't break the provisioning response or the chat.
+    """
+    global _initialized, _init_error, _init_details
+
+    if not _is_enabled():
+        return {"status": "disabled"}
+
+    # If explicit target ids are pinned (provisioning button), keep them so we
+    # bind to the exact injected stream. Otherwise drop the name-derived project
+    # id cached during the first init so it re-resolves from the new names.
+    if not os.environ.get("GALILEO_LOG_STREAM_ID"):
+        os.environ.pop("GALILEO_PROJECT_ID", None)
+
+    with _lock:
+        _initialized = False
+        _init_error = None
+        _init_details = {}
+
+    try:
+        ok = init_agent_control()
+        return {"status": "repointed" if ok else "not_initialized", "details": _init_details}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "error": f"{type(e).__name__}: {e}"}
 
 
 def _init_enterprise(agent_control) -> bool:

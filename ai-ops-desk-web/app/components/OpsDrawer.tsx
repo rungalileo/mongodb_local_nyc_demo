@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ChatResult, Scenario, User, getScenarios, getUsers } from "@/lib/api";
+import {
+  ChatResult,
+  PromoDemoResult,
+  Scenario,
+  User,
+  createPromoDemo,
+  getScenarios,
+  getUsers,
+} from "@/lib/api";
 import { Identity, identityFor } from "@/lib/identity";
 import { AgentRow, AgentStatus } from "./ChatWidget";
 import { OPS_LABEL as AGENT_LABEL, OPS_DESC as AGENT_DESC } from "@/lib/agentLabels";
@@ -103,6 +111,10 @@ export function OpsDrawer({
                 — force old policy version
               </span>
             </label>
+          </Section>
+
+          <Section title="Generate demo traffic">
+            <PromoDemoPanel />
           </Section>
 
           <Section title="Agent timeline">
@@ -239,6 +251,161 @@ export function OpsDrawer({
         </div>
       </aside>
     </>
+  );
+}
+
+function PromoDemoPanel() {
+  const [projectName, setProjectName] = useState("discount-demo");
+  const [logStreamName, setLogStreamName] = useState("Default");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<PromoDemoResult | null>(null);
+
+  const submit = async () => {
+    if (!projectName.trim() || busy) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await createPromoDemo({
+        project_name: projectName.trim(),
+        log_stream_name: logStreamName.trim() || "Default",
+      });
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stepStatus = (key: string): string | undefined => {
+    const step = result?.steps?.[key] as Record<string, unknown> | undefined;
+    return step?.status as string | undefined;
+  };
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-xs text-zinc-500">
+        Creates the Galileo project + log stream and feeds it a stream of promo
+        conversations — about ~10 expired-promo mistakes per hour (backdated over
+        the last few hours), mixed with correct live-promo runs. Build the eval
+        metric and steer control by hand in the Console.
+      </p>
+
+      <label className="block">
+        <span className="text-[11px] text-zinc-500">Project name</span>
+        <input
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+          disabled={busy}
+          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+          placeholder="discount-demo"
+        />
+      </label>
+
+      <label className="block">
+        <span className="text-[11px] text-zinc-500">Log stream name</span>
+        <input
+          value={logStreamName}
+          onChange={(e) => setLogStreamName(e.target.value)}
+          disabled={busy}
+          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+          placeholder="Default"
+        />
+      </label>
+
+      <button
+        onClick={submit}
+        disabled={busy || !projectName.trim()}
+        className="w-full rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 transition-colors disabled:opacity-40"
+      >
+        {busy ? "Injecting…" : "Create project + inject traffic"}
+      </button>
+
+      {result && (
+        <div
+          className={`rounded-md border p-2.5 text-xs space-y-1 ${
+            result.ok
+              ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30"
+              : "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30"
+          }`}
+        >
+          {result.ok ? (
+            <>
+              <div className="font-semibold text-emerald-700 dark:text-emerald-300">
+                ✓ Provisioned {result.project_name} / {result.log_stream_name}
+              </div>
+              <StepLine label="Project" status={stepStatus("project")} />
+              <StepLine label="Log stream" status={stepStatus("log_stream")} />
+              <StepLine label="Injection" status={stepStatus("injection")} />
+              <StepLine label="Live routing" status={stepStatus("set_active")} />
+              {(() => {
+                const inj = result.steps?.injection as
+                  | Record<string, unknown>
+                  | undefined;
+                if (!inj) return null;
+                return (
+                  <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
+                    {String(inj.expired_applied ?? "?")} expired promos applied ·
+                    leak ≈ USD {String(inj.leaked_discount_usd ?? "?")}
+                  </div>
+                );
+              })()}
+              {result.console_url && (
+                <a
+                  href={result.console_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-block mt-1 text-indigo-600 dark:text-indigo-400 hover:underline"
+                >
+                  Open Galileo console →
+                </a>
+              )}
+              <p className="text-[11px] text-zinc-500">
+                In the console, open the log stream and click{" "}
+                <b>Generate signal</b> on the “Apply Discount” span
+                (promo_expired == true).
+              </p>
+              {result.active_target && (
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                  Live chat now logs to this project — new manual runs appear
+                  here (env project overridden).
+                </p>
+              )}
+            </>
+          ) : (
+            <div className="text-red-700 dark:text-red-300">
+              ✗ {result.error || "Provisioning failed"}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepLine({
+  label,
+  status,
+}: {
+  label: string;
+  status: string | undefined;
+}) {
+  const ok = status === "ok" || status === "created" || status === "exists";
+  const skipped = status === "skipped";
+  const icon = ok ? "✓" : skipped ? "–" : "⚠";
+  const color = ok
+    ? "text-emerald-600 dark:text-emerald-400"
+    : skipped
+    ? "text-zinc-400"
+    : "text-amber-600 dark:text-amber-400";
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={color}>{icon}</span>
+      <span className="text-zinc-600 dark:text-zinc-400">{label}</span>
+      <span className="ml-auto font-mono text-[11px] text-zinc-500">
+        {status ?? "?"}
+      </span>
+    </div>
   );
 }
 
