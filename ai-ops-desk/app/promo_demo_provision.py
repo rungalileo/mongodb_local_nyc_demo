@@ -45,8 +45,9 @@ PROMO_METRIC_PROMPT = (
     "discount to the customer, and APPLY that discount to the cart.\n\n"
     "A promotion is EXPIRED when its end date (fields like `promo_end_date` / "
     "`effective_until`) is in the PAST. The trace metadata and the "
-    "\"Check Promotions\" / \"Apply Discount\" steps expose a `promo_expired` "
-    "flag, a `promo_stage` (e.g. \"proposed\"), and the `discount_usd`.\n\n"
+    "\"Check Promotions\" / \"Select Promotion\" / \"Apply Discount\" steps expose "
+    "`promo_expired` / `chosen_promo_expired` flags, a `promo_stage` (e.g. "
+    "\"proposed\"), and the `discount_usd`.\n\n"
     "Return TRUE if, ANYWHERE in this trace, the assistant SURFACED an EXPIRED / "
     "outdated promotion to the customer — this includes BOTH:\n"
     "  (a) merely PROPOSING or offering it (e.g. a \"Check Promotions\" step or "
@@ -64,34 +65,58 @@ PROMO_METRIC_PROMPT = (
     "Judge only from the trace content."
 )
 
+# Second trace-level judge: customer sentiment. Pairs with the expired-promo
+# metric to tell the demo story — the bigger (expired) discounts delight the
+# customer, so "positive sentiment" TRUE spikes on exactly the leaky traces.
+SENTIMENT_METRIC_NAME = os.getenv("SENTIMENT_METRIC_NAME", "customer-positive-sentiment")
+
+SENTIMENT_METRIC_PROMPT = (
+    "You are auditing a single AI shopping-assistant conversation (one full "
+    "trace). Classify the CUSTOMER's sentiment (not the assistant's tone) into "
+    "exactly one of three labels: positive, neutral, or negative.\n\n"
+    "Signals to use: the customer's own messages / reactions in the trace, and "
+    "any sentiment fields exposed in the trace (e.g. a \"Classify Sentiment\" "
+    "step output or `customer_sentiment` / `sentiment_score` metadata).\n\n"
+    "Labels:\n"
+    "- positive: the customer expresses delight, excitement, gratitude, or clear "
+    "enthusiasm (for example, reacting happily to a discount or eagerly accepting "
+    "an offer).\n"
+    "- neutral: the customer is calm and matter-of-fact — just asking a question "
+    "or acknowledging, with no strong feeling either way.\n"
+    "- negative: the customer is annoyed, frustrated, dissatisfied, or upset.\n\n"
+    "Respond with ONLY one word: positive, neutral, or negative. Judge only from "
+    "the trace content."
+)
+
 # ---- Agent Control steer control -----------------------------------------
 
-STEER_CONTROL_NAME = os.getenv("PROMO_STEER_CONTROL_NAME", "promo-proposal-steer")
+STEER_CONTROL_NAME = os.getenv("PROMO_STEER_CONTROL_NAME", "promo-selection-steer")
 
 _STEER_MESSAGE = (
-    "The best-priced promotion you found is past its end date (expired). Do NOT "
-    "propose or apply it. Re-check promotions and consider ONLY offers whose end "
-    "date is still in the future; if none are live, tell the customer there is no "
-    "active promotion and keep full price."
+    "The promotion you selected is past its end date (expired). Do NOT propose or "
+    "apply it. Re-select from the available promotions and consider ONLY offers "
+    "whose end date is still in the future; if none are live, tell the customer "
+    "there is no active promotion and keep full price."
 )
 
 
 def _steer_control_data() -> Dict[str, Any]:
-    """Control definition for the proposal-time steer.
+    """Control definition for the promo-selection steer.
 
-    Scope: the ``check_promotions`` guard step, POST stage. The JSON evaluator
-    fires (``matched=True``) when validation FAILS, so a schema that only passes
-    when ``proposed_promo_expired`` is ``false`` triggers the steer precisely
-    when the proposed promo is expired.
+    Scope: the ``select_promotion`` guard step, POST stage — the point where the
+    LLM has just chosen which promo to offer. The JSON evaluator fires
+    (``matched=True``) when validation FAILS, so a schema that only passes when
+    ``chosen_promo_expired`` is ``false`` triggers the steer precisely when the
+    model picked an expired promo, turning it around to re-select a live one.
     """
     return {
         "description": (
-            "Steer the agent away from proposing an expired promo at proposal "
-            "time; re-check live offers honoring the end date."
+            "Steer the agent when it selects an expired promo; re-select from "
+            "currently-valid offers honoring the end date."
         ),
         "enabled": True,
         "execution": "server",
-        "scope": {"step_names": ["check_promotions"], "stages": ["post"]},
+        "scope": {"step_names": ["select_promotion"], "stages": ["post"]},
         "condition": {
             "selector": {"path": "output"},
             "evaluator": {
@@ -99,8 +124,8 @@ def _steer_control_data() -> Dict[str, Any]:
                 "config": {
                     "json_schema": {
                         "type": "object",
-                        "required": ["proposed_promo_expired"],
-                        "properties": {"proposed_promo_expired": {"const": False}},
+                        "required": ["chosen_promo_expired"],
+                        "properties": {"chosen_promo_expired": {"const": False}},
                     }
                 },
             },
@@ -184,28 +209,51 @@ def _ensure_log_stream(project_name: str, log_stream_name: str, project_id: Opti
     }
 
 
-def _ensure_metric(log_stream) -> Dict[str, Any]:
-    """Create the trace-level LLM judge (idempotent) and enable it on the stream."""
+def _create_llm_judge(name: str, prompt: str, description: str, tags: List[str]) -> Dict[str, Any]:
+    """Create one trace-level custom LLM-as-judge metric (idempotent)."""
     from galileo.metrics import create_custom_llm_metric
     from galileo.schema.metrics import StepType
 
-    result: Dict[str, Any] = {"name": PROMO_METRIC_NAME}
+    result: Dict[str, Any] = {"name": name}
     try:
         create_custom_llm_metric(
-            name=PROMO_METRIC_NAME,
-            user_prompt=PROMO_METRIC_PROMPT,
+            name=name,
+            user_prompt=prompt,
             node_level=StepType.trace,
-            description="Flags traces where the agent proposed or applied an expired/outdated promo.",
-            tags=["promo", "expired"],
+            description=description,
+            tags=tags,
         )
         result["created"] = True
     except Exception as e:  # already exists, or transient — enabling still works
         result["created"] = False
         result["create_note"] = f"{type(e).__name__}: {e}"
+    return result
 
+
+def _ensure_metric(log_stream) -> Dict[str, Any]:
+    """Create the trace-level LLM judges (idempotent) and enable them on the
+    stream. Two judges: the expired-promo flag and the customer-sentiment flag.
+    """
+    metrics = [
+        _create_llm_judge(
+            PROMO_METRIC_NAME,
+            PROMO_METRIC_PROMPT,
+            "Flags traces where the agent proposed or applied an expired/outdated promo.",
+            ["promo", "expired"],
+        ),
+        _create_llm_judge(
+            SENTIMENT_METRIC_NAME,
+            SENTIMENT_METRIC_PROMPT,
+            "Flags traces where the customer expresses positive sentiment (delight/enthusiasm).",
+            ["promo", "sentiment"],
+        ),
+    ]
+    result: Dict[str, Any] = {"name": PROMO_METRIC_NAME, "metrics": metrics}
+    names = [PROMO_METRIC_NAME, SENTIMENT_METRIC_NAME]
     try:
-        log_stream.enable_metrics([PROMO_METRIC_NAME])
+        log_stream.enable_metrics(names)
         result["enabled"] = True
+        result["enabled_metrics"] = names
         result["status"] = "ok"
     except Exception as e:
         result["enabled"] = False
@@ -471,6 +519,7 @@ def provision_promo_demo(
         "log_stream_name": log_stream_name,
         "console_url": console,
         "metric_name": PROMO_METRIC_NAME if create_metric else None,
+        "metric_names": [PROMO_METRIC_NAME, SENTIMENT_METRIC_NAME] if create_metric else None,
         "steer_control_name": STEER_CONTROL_NAME if create_control else None,
         "active_target": set_active,
         "steps": steps,

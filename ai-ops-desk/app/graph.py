@@ -105,7 +105,7 @@ async def policy_node(state: AgentState) -> AgentState:
     return state
 
 
-@log(span_type="workflow", name="Agent Trace", params={"AAAAAAAA":"b"})
+@log(span_type="workflow", name="Records Agent")
 async def records_node(state: AgentState) -> AgentState:
     print(f"{Fore.GREEN}→ Records Agent: Starting{Style.RESET_ALL}")
     record_agent_timing(state, "records", start=True)
@@ -160,6 +160,13 @@ async def router_node(state: AgentState) -> AgentState:
 
 def _route_selector(state: AgentState) -> str:
     """Conditional-edge selector: 'promo' -> action, else -> records."""
+    return "promo" if state.get("route") == "promo" else "support"
+
+
+def _post_action_selector(state: AgentState) -> str:
+    """After Action: the promo path skips the Audit agent (its refund/policy
+    rationale is irrelevant to the promo story and only clutters the trace);
+    the support path keeps the full Audit step."""
     return "promo" if state.get("route") == "promo" else "support"
 
 
@@ -234,6 +241,10 @@ async def synthesizer_node(state: AgentState) -> AgentState:
             error=state.get("error"),
         )
         state["customer_reply"] = reply
+        # The promo path skips the Audit agent (which is what normally flips
+        # status to "completed"), so mark completion here for any non-error run.
+        if state.get("status") != "error":
+            state["status"] = "completed"
         print(f"{Fore.MAGENTA}✓ Synthesizer Agent: Complete{Style.RESET_ALL}")
     except Exception as e:
         print(f"✗ Synthesizer Agent failed: {str(e)}")
@@ -246,11 +257,13 @@ async def synthesizer_node(state: AgentState) -> AgentState:
 
 
 '''
-router ─┬─ promo ───────────────► action → audit → synthesizer → END
+router ─┬─ promo ───────────────► action ─────────► synthesizer → END
         └─ support → records → policy → action → audit → synthesizer → END
 
-The router skips Records/Policy (and their irrelevant order/refund/policy tool
-calls) for the promo path; the refund/order/receipt path is unchanged.
+The promo path skips Records/Policy (irrelevant order/refund/policy tool calls)
+AND Audit (irrelevant rationale/citations) so the false-promo trace stays
+focused on: check promotions → select promotion (LLM+steer) → reply. The
+refund/order/receipt path keeps every step.
 '''
 async def create_ops_desk_graph():
     """Create and configure the operations desk agent graph"""
@@ -277,7 +290,13 @@ async def create_ops_desk_graph():
     )
     workflow.add_edge("records", "policy")
     workflow.add_edge("policy", "action")
-    workflow.add_edge("action", "audit")
+    # Promo path skips Audit and goes straight to the reply; support path keeps
+    # the Audit step for its rationale/citation trail.
+    workflow.add_conditional_edges(
+        "action",
+        _post_action_selector,
+        {"promo": "synthesizer", "support": "audit"},
+    )
     workflow.add_edge("audit", "synthesizer")
     workflow.add_edge("synthesizer", END)
     

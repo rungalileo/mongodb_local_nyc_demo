@@ -8,6 +8,7 @@ customer-facing (refund/ticket reference numbers), no tool names, no
 hallucinated facts beyond what the tools actually returned.
 """
 import json
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from galileo import log
@@ -287,59 +288,23 @@ def _render_promo_propose_reply(action_output: Optional[ActionOutput]) -> Option
         f", saving you {saved} that brings it to {_money(final_price)}{list_line}"
         if final_price is not None else f", saving you {saved}"
     )
+
+    # State the promo's end date plainly, as a normal detail — the agent read
+    # the field but never reasoned "today is past it," so a date that has
+    # actually lapsed reads as the surface-level tell of the hallucination.
+    def _fmt_date(value: Any) -> Optional[str]:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+        except (TypeError, ValueError):
+            return None
+
+    end_date = _fmt_date(resp.get("proposed_promo_end_date"))
+    end_line = f" This offer is listed with an end date of {end_date}." if end_date else ""
+
     return (
         f"Great news — Voltway is running the {offer} on the {product}"
-        f"{price_line}. Want me to apply it and add it to your cart?"
-    )
-
-
-def _render_blocked_discount_reply(action_output: Optional[ActionOutput]) -> Optional[str]:
-    """If apply_discount was blocked by Agent Control (expired promo), render a
-    clean "that offer has expired, price unchanged" reply.
-
-    This is the control-on remediation: the agent tried to apply a stale promo,
-    the guard stopped it, and instead of quietly discounting we keep the full
-    price and tell the customer the code lapsed. Demo intent: compare this run
-    against a control-off run where the agent confidently gives away the
-    expired discount.
-    """
-    if not action_output or not action_output.tool_receipts:
-        return None
-    blocked = next(
-        (
-            r for r in action_output.tool_receipts
-            if r.tool == "apply_discount"
-            and r.status == 412
-            and (r.response or {}).get("error") == "blocked_by_agent_control"
-        ),
-        None,
-    )
-    if not blocked:
-        return None
-
-    resp = blocked.response or {}
-    product = resp.get("product_name") or "that item"
-    currency = resp.get("currency") or "USD"
-    offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
-    list_price = resp.get("list_price")
-    end_date = resp.get("promo_end_date") or ""
-    if isinstance(end_date, str) and "T" in end_date:
-        end_date = end_date.split("T", 1)[0]
-
-    def _money(value: Any) -> str:
-        try:
-            return f"{currency} {float(value):,.2f}"
-        except (TypeError, ValueError):
-            return f"{currency} {value}"
-
-    price_line = (
-        f" the {product} stays at {_money(list_price)}"
-        if list_price is not None else f" the {product} stays at full price"
-    )
-    ended = f" (it ended on {end_date})" if end_date else ""
-    return (
-        f"I'm sorry, but the {offer} has expired{ended}, so I wasn't able to apply it —"
-        f"{price_line}. I can let you know if a new offer comes up, or help with anything else."
+        f"{price_line}.{end_line} Want me to apply it and add it to your cart?"
     )
 
 
@@ -421,10 +386,7 @@ class SynthesizerAgent:
             declined = _render_promo_declined_reply(action_output)
             if declined:
                 return declined
-            blocked_discount = _render_blocked_discount_reply(action_output)
-            if blocked_discount:
-                return blocked_discount
-            discount = _render_discount_reply(action_output)
+            discount = await self._render_discount_reply_llm(action_output)
             if discount:
                 return discount
             no_promo = _render_no_promo_reply(action_output)
@@ -458,3 +420,72 @@ class SynthesizerAgent:
         except Exception as e:
             print(f"  Synthesizer failed: {e}")
             return "Thanks — I've logged your request and someone will follow up shortly."
+
+    async def _render_discount_reply_llm(
+        self, action_output: Optional[ActionOutput]
+    ) -> Optional[str]:
+        """LLM-backed version of the apply confirmation (turn 2).
+
+        Behaves exactly like ``_render_discount_reply`` (returns ``None`` when no
+        discount was applied so the caller falls through), but generates the copy
+        with a real model call via ``complete_with_usage(span_name="Synthesizer
+        Reply")``. That emits one hand-logged ``llm`` span carrying genuine token
+        usage, so the apply-turn trace shows real token counts (the templated path
+        made no LLM call, leaving the token columns empty).
+
+        The prompt is grounded on the applied facts and, like the templated reply,
+        is cheerfully confident — the agent still has no idea the promo expired.
+        Any failure falls back to the deterministic templated string so the demo
+        never breaks. The structured receipt card is unaffected (the frontend
+        renders it from the apply_discount receipt, not this text).
+        """
+        if not action_output or not action_output.tool_receipts:
+            return None
+        applied = next(
+            (
+                r for r in action_output.tool_receipts
+                if r.tool == "apply_discount" and 200 <= r.status < 300
+            ),
+            None,
+        )
+        if not applied:
+            return None
+
+        resp = applied.response or {}
+        product = resp.get("product_name") or "your item"
+        currency = resp.get("currency") or "USD"
+        offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
+        discount = resp.get("discount_usd")
+        final_price = resp.get("final_price")
+
+        def _money(value: Any) -> str:
+            try:
+                return f"{currency} {float(value):.2f}"
+            except (TypeError, ValueError):
+                return f"{currency} {value}"
+
+        facts = {
+            "product": product,
+            "offer": offer,
+            "amount_saved": _money(discount) if discount is not None else "a discount",
+            "new_price": _money(final_price) if final_price is not None else None,
+        }
+        prompt = (
+            "You are Voltway's shopping assistant. The customer just confirmed, so "
+            "you APPLIED a promotion and added the item to their cart. Write ONE "
+            "warm, confident sentence (max two) confirming it. Name the offer, the "
+            "amount saved, and the new price, and mention it's added to the cart. Do "
+            "NOT mention expiry, validity, or dates. Be upbeat.\n\n"
+            f"Facts:\n{json.dumps(facts, indent=2, default=str)}\n\nReply:"
+        )
+        try:
+            reply, _usage = await self.llm.complete_with_usage(
+                prompt, span_name="Synthesizer Reply", temperature=0.4, max_tokens=120
+            )
+            reply = (reply or "").strip().strip('"')
+            if reply:
+                return reply
+        except Exception as e:
+            print(f"  Synthesizer discount reply (LLM) failed: {e}")
+        # Deterministic fallback — demo must never break on an LLM hiccup.
+        return _render_discount_reply(action_output)

@@ -27,14 +27,22 @@ laptop, …). The web chat runs a **two-turn** flow:
 The agent:
 
 1. Classifies the intent as `promo_inquiry`.
-2. Calls **`check_promotions`**, which reads promos from a **stale cache**
-   (`get_product_promotions` deliberately does **not** filter on
-   `effective_until`), so promos that ended weeks ago come back looking live.
-3. Picks the **biggest dollar discount** to propose — which is the expired ~50%
-   `CLEARANCE-BLOWOUT` (~$600 off a $1,199 phone), not the small *live*
-   `STUDENT-SAVE` deal (−$100) — stashes it as the "promo in focus" for this
-   chat session, and asks the customer to confirm:
-   *"I found promo CLEARANCE-BLOWOUT saving you $599.50 … want me to apply it?"*
+2. Calls **`check_promotions`**, which returns the **full, honest** promo list —
+   every candidate with its `effective_until` end date. The tool also computes an
+   `expired` flag for each (used by the trace signals + guardrail). Both the
+   expired `QMOBILE` ($700 off) and the live `FALL-SALE` ($200 off) come back. End
+   dates are anchored to *today* (live ≈ +30d, stale ≈ −7d) so the split holds on
+   any demo day.
+3. Runs the **`Select Promotion`** LLM step (temperature 0). The prompt lists each
+   promo's **end date but no pre-computed expiry verdict and no "today's date"**,
+   and tells the model only to offer the **largest discount**. It greedily picks
+   the biggest — the **expired** `QMOBILE` — because it never does the "is this
+   date in the past?" check. That's the reasoning failure (an LLM choice, not a
+   Python `max()`, and not a hint we spoon-fed it). It's stashed as the "promo in
+   focus" and proposed:
+   *"Voltway is running the QMobile promotion, saving you $700 … This offer is
+   listed with an end date of Jun 6, 2026. Want me to apply it?"* — the agent
+   **states the (already-lapsed) end date plainly**, the surface-level tell.
 
 **Turn 2 — the customer says "yes":**
 
@@ -43,24 +51,30 @@ The agent:
    confidently confirms the savings with a **discount receipt card** (list price
    → −discount → new price).
 
-The agent never realizes the promo expired. That gap — a cheerful "you saved
-$599.50!" reply on top of an expired-promo signal in the trace — is the whole point.
+The agent never reasons that the promo expired even though it recited the date.
+That gap — a cheerful "you saved $700!" reply, an end date sitting in the chat,
+and an expired-promo signal in the trace — is the whole point.
 
-> **With the steer control on** (see below), turn 1 is intercepted: the expired
-> `CLEARANCE-BLOWOUT` is caught at proposal time, the agent turns around and
-> re-checks live offers, and proposes the valid `STUDENT-SAVE` (−$100) instead
-> — or tells the customer there's no active promo if none are live.
+> **With the steer control on** (see below), the `Select Promotion` step is
+> intercepted: the model's expired `QMOBILE` pick is caught, the agent re-runs
+> the selection over **live offers only**, and proposes the valid `FALL-SALE`
+> (−$200) instead — or tells the customer there's no active promo if none are
+> live.
 
-### The intentional bug
+### Where the failure lives (surface + technical)
 
-- `app/rag/atlas_client.py::get_promos_for_sku` → `find({"sku": sku})` with **no
-  date filter**. This is the "stale promo cache".
-- `SPRING-SAVER` and `CLEARANCE-BLOWOUT` seeded by `setup_promos.py` have
-  `effective_until` in the **past** (only `STUDENT-SAVE` is live).
-- The agent proposes the largest discount, so it reaches for the expired
-  clearance over the live student deal.
-- `apply_discount` applies the discount regardless of expiry and emits
-  `promo_expired: true`.
+- **Technical:** `check_promotions` hands over correct, complete data (end dates,
+  plus a code-computed `expired` flag for the trace/guardrail). The **`Select
+  Promotion` LLM step** only gets the end dates (no pre-labeled expiry, no today's
+  date) and, told to maximize savings, chooses the expired promo — it never
+  reasons about temporal validity. A genuine model reasoning failure the guardrail
+  can steer. (`get_promos_for_sku` still returns all promos unfiltered; the *tool*
+  isn't the failure, the *choice* is. The deterministic date check lives in the
+  guardrail, which is exactly the capability the LLM lacks.)
+- **Surface:** the propose reply recites the promo's end date as a normal detail
+  (`synthesizer._render_promo_propose_reply`), so a date that has actually
+  lapsed is visible in the chat itself.
+- `apply_discount` applies whatever was selected and emits `promo_expired: true`.
 
 > **Two-turn (UI) vs single-turn (CLI / traffic generator).** The web chat is
 > two-turn: propose, then apply on "yes" (the pending promo is remembered per
@@ -137,9 +151,12 @@ Changed:
 - `app/session_cache.py` — `remember_promo` / `recall_promo` / `clear_promo`
   for the two-turn "promo in focus".
 - `app/agents/action.py` — `promo_inquiry` intent, two-turn propose/apply
-  routing, `check_promotions` (proposes the biggest discount) / `apply_discount`
-  (discount metadata on the span), and **`apply_discount` is now `@control()`-
-  guarded** with an expired-promo block + full-price remediation.
+  routing, `check_promotions` (returns the honest promo list w/ end dates +
+  `is_expired`), the **`Select Promotion` LLM step** (`_llm_pick_promo`, temp 0)
+  that greedily picks the expired promo, and **`_promo_selection_guard` is
+  `@control(step_name="select_promotion")`-guarded** so a steer control re-runs
+  the selection over live offers. `apply_discount` is a plain tool (single
+  control at selection).
 - `app/graph.py` — threads `chat_session_id` into the Action agent.
 - `app/agents/synthesizer.py` — deterministic replies: propose (turn 1),
   applied (turn 2), and "promo expired, price unchanged" (control block).
@@ -288,33 +305,25 @@ Because the demo's `apply_discount` output already carries `promo_expired`,
 `promo_end_date`, and `discount_usd`, the guardrail has everything it needs to
 decide without extra plumbing.
 
-### 4) Agent Control — code-side runtime block (like `refund-compliance`)
+### 4) Agent Control — steer the LLM's selection (single runtime control)
 
-`apply_discount` is decorated with **`@control()`**, so it registers as a
-controllable step named `apply_discount` (auto-discovered at import — see
-`app/agent_control_setup.py`). Until a matching control exists, the guard is a
-**no-op** and the expired discount goes through — that's the default failure
-mode you demo first.
+`_promo_selection_guard` is decorated with **`@control(step_name="select_promotion")`**,
+so the `Select Promotion` step registers as a controllable step (auto-discovered
+at import — see `app/agent_control_setup.py`). Until a matching control exists the
+guard is a **no-op** and the LLM's expired pick sails through — that's the default
+failure mode you demo first. `apply_discount` is **not** guarded: consolidating to
+one control at the selection step keeps the trace clean and the story singular.
 
-To turn on the block, create a **`promo-compliance`** control (Console for ACE,
-or `setup_agent_control.py` for the self-hosted OSS server) that:
+To turn it on, create the **`promo-selection-steer`** control from section
+**B** above (Console for ACE) — scoped to step `select_promotion`, `post` stage,
+JSON evaluator that steers when `chosen_promo_expired == true`.
 
-1. Is scoped to the step `apply_discount` at the `post` stage.
-2. Denies when the step output has `promo_expired == true`.
-3. Action: **block / deny**.
-
-When the control fires, `apply_discount` raises `ControlViolationError`;
-`_apply_discount_span` catches it and returns a `412` payload that keeps the
-customer at **list price** (`discount_usd: 0`, `final_price == list_price`) while
-recording `attempted_discount_usd` so the trace/UI still show the loss that was
-prevented. The synthesizer then renders the "promo expired, price unchanged"
-reply and the UI shows the amber **blocked** discount card. This mirrors the
-refund-compliance self-correct: run once with the control off (agent gives away
-$1,375), then once with it on (blocked, full price kept).
-
-> The Console Luna guardrail (step 3) and this code-side control (step 4) are two
-> independent ways to stop the leak — use whichever the venue's Galileo build
-> supports. The signal/eval fields are the same either way.
+When the control fires, `_promo_selection_guard` raises `ControlSteerError`;
+`_select_promotion` catches it and **re-runs the LLM selection over live offers
+only**, landing on the valid `FALL-SALE` (−$200). The customer is then offered
+and applied the *correct* deal — no "blocked, full price" state needed. This is
+the self-correct: run once with the control off (agent gives away $700 on the
+expired `QMOBILE`), then once with it on (steered to the live $200 deal).
 
 ---
 
@@ -326,10 +335,10 @@ name** and **log stream name**, and it does everything below in one call
 
 1. Creates the project (idempotent).
 2. Creates the log stream (idempotent).
-3. Creates + enables the trace-level **LLM-as-judge** metric
-   (`expired-promo-applied`) on that log stream.
-4. Creates + binds the **steer control** (`promo-proposal-steer`) to that log
-   stream.
+3. Creates + enables the two trace-level **LLM-as-judge** metrics
+   (`expired-promo-applied` and `customer-positive-sentiment`) on that log stream.
+4. Creates + binds the **steer control** (`promo-selection-steer`, scoped to the
+   `select_promotion` step) to that log stream.
 5. Injects the spike-shaped traffic (same generator as `inject_promo_sessions.py`).
 6. **Routes live chat here** (checkbox *"Route live chat traces here"*, on by
    default): repoints the running app at the new project/log stream so **every
@@ -383,35 +392,57 @@ this against the **project + log stream** the demo logs to (`GALILEO_PROJECT` /
    `expired-promo-surfaced` in a new org.
 6. **Enable** the metric on the demo **log stream** so it scores new traffic.
 
-### B) Agent Control steer control (proposal-time)
+### A2) LLM-as-judge metric — customer sentiment (trace level)
+
+A second custom LLM judge that scores the **customer's** sentiment, so you can
+chart it next to the expired-promo flag: the big (expired) discounts delight the
+customer, so "positive sentiment" TRUE spikes on exactly the leaky traces.
+
+1. **Metrics → New metric → LLM-as-judge** (custom LLM scorer).
+2. **Name**: `customer-positive-sentiment`.
+3. **Node/Scoreable level**: **Trace**.
+4. **Output type**: **Categorical** with labels `positive`, `neutral`, `negative`.
+5. **Prompt** (paste `SENTIMENT_METRIC_PROMPT` from
+   `app/promo_demo_provision.py` verbatim): *"…Classify the CUSTOMER's sentiment
+   into exactly one of three labels: positive, neutral, or negative… Respond with
+   ONLY one word."* It reads the customer's own messages plus any
+   `customer_sentiment` / `sentiment_score` metadata and the `Classify Sentiment`
+   step.
+6. **Enable** it on the same demo **log stream**.
+
+> The one-click Ops button provisions **both** judges together (`_ensure_metric`
+> creates + enables `expired-promo-applied` and `customer-positive-sentiment`).
+> Chart both over time to show the two spikes rising together.
+
+### B) Agent Control steer control (selection-time)
 
 Create a control on the log stream's **Controls** tab (ACE):
 
 | Field | Value |
 |-------|-------|
-| **Name** | `promo-proposal-steer` |
+| **Name** | `promo-selection-steer` |
 | **Execution** | Server |
 | **Stages** | `POST` |
-| **Step name(s)** | `check_promotions` (exact; Regex off) |
+| **Step name(s)** | `select_promotion` (exact; Regex off) |
 | **Path / selector** | `output` |
 | **Evaluator** | **JSON** |
-| **JSON schema** | `{"type":"object","required":["proposed_promo_expired"],"properties":{"proposed_promo_expired":{"const":false}}}` |
+| **JSON schema** | `{"type":"object","required":["chosen_promo_expired"],"properties":{"chosen_promo_expired":{"const":false}}}` |
 | **Action** | **Steer** |
-| **Steering message** | *"The best-priced promotion you found is past its end date (expired). Do NOT propose or apply it. Re-check promotions and consider ONLY offers whose end date is still in the future; if none are live, tell the customer there is no active promotion and keep full price."* |
+| **Steering message** | *"The promotion you selected is past its end date (expired). Do NOT propose or apply it. Re-select from the available promotions and consider ONLY offers whose end date is still in the future; if none are live, tell the customer there is no active promotion and keep full price."* |
 
 Then **enable the binding** on the log stream.
 
 **Why the schema is inverted:** the JSON evaluator reports a *match* when
-validation **fails**. The schema above only passes when
-`proposed_promo_expired` is `false`, so it *fails → matches → steers* exactly
-when the proposed promo is expired. The app's `_promo_proposal_guard`
-(`app/agents/action.py`, step `check_promotions`) catches the resulting
-`ControlSteerError` and re-picks the best **live** promo (`STUDENT-SAVE`), or
+validation **fails**. The schema above only passes when `chosen_promo_expired`
+is `false`, so it *fails → matches → steers* exactly when the model picked an
+expired promo. The app's `_promo_selection_guard` (`app/agents/action.py`, step
+`select_promotion`) catches the resulting `ControlSteerError` and re-runs the
+LLM selection over **live offers only** (landing on `FALL-SALE`, −$200), or
 tells the customer there's no active deal.
 
-> **Two controls, two moments.** `promo-proposal-steer` (this one) fires at
-> **turn 1 / `check_promotions`** and redirects to a live offer. The older
-> `promo-compliance` **deny** control (scoped to `apply_discount`) is the
-> turn-2 backstop that blocks the apply if a stale offer still gets through.
-> Keep the deny control scoped to **`apply_discount`** only so the two don't
-> cross-fire.
+> **One control, one moment.** This is now the *only* promo guardrail. It fires
+> at the **`select_promotion`** step — the LLM's own choice — and steers the
+> model to re-select a live offer. `apply_discount` is **no longer** `@control()`
+> guarded: with the control off the LLM's expired pick simply applies (the
+> leak); with it on, the selection was already steered so the *valid* deal is
+> what gets applied. No second (deny) control is needed.

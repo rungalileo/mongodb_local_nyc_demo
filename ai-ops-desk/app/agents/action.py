@@ -2,7 +2,7 @@ from re import U
 import asyncio
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from colorama import Fore, Style
@@ -138,7 +138,6 @@ class ActionAgent:
         # Set per-request in process(); tools read it for the two-turn promo flow.
         self._chat_session_id: Optional[str] = None
     
-    @log(span_type="agent", name="Process")
     async def process(self, 
                     user_id: str, 
                     user_query: str, 
@@ -179,7 +178,6 @@ class ActionAgent:
 
         print(f"  {Fore.YELLOW}Classifying sentiment via LLM...{Style.RESET_ALL}")
         latest_sentiment = await self._classify_sentiment(user_query)
-        # latest_sentiment = await self._classify_sentiment_v2(user_query)
         print(f"  {Fore.YELLOW}Detected sentiment: {latest_sentiment}{Style.RESET_ALL}")
 
         if intent is None:
@@ -246,7 +244,6 @@ class ActionAgent:
             customer_sentiment=latest_sentiment,
         )
     
-    @log(span_type="agent", name="Classify Route")
     async def classify_route(self, user_query: str, chat_session_id: Optional[str]) -> tuple[str, str]:
         """Decide the graph route (``"promo"`` vs ``"support"``) and return the
         classified intent alongside it.
@@ -336,7 +333,6 @@ class ActionAgent:
 
         return tools
     
-    @log(span_type="agent", name="Classify Intent")
     async def _classify_intent(self, text: str, context: Dict[str, Any]) -> str:
 
         """Classify user intent using LLM"""
@@ -369,7 +365,6 @@ class ActionAgent:
             print(f"  Intent classification failed: {e}")
             return INTENT_GENERAL
     
-    @log(span_type="agent", name="Classify Sentiment")
     async def _classify_sentiment(self, text: str) -> str:
         """Classify customer sentiment using LLM based on current text and existing sentiment"""
         
@@ -396,45 +391,6 @@ class ActionAgent:
         except Exception as e:
             print(f"  Sentiment classification failed: {e}")
             return SENTIMENT_NEUTRAL
-
-    @log(span_type="agent", name="Classify Sentiment")
-    async def _classify_sentiment_v2(self, text: str) -> str:
-        """Classify customer sentiment using LLM based on current text and existing sentiment"""
-        
-        prompt = f"""
-        SYSTEM:
-        You are a strict classifier for customer-service escalation SEVERITY, not generic sentiment.
-        Follow the decision procedure exactly.
-
-        DECISION PROCEDURE (apply in order):
-        1) If the message contains any of: profanity, personal insults, slurs, threats, ALL-CAPS SHOUTING (≥50% of words uppercased), or repeated exclamation (e.g., "!!!"), classify as NEGATIVE.
-        2) Else if the message expresses clear praise, gratitude, or happiness, classify as POSITIVE.
-        3) Otherwise classify as NEUTRAL, including calm complaints, dissatisfaction, returns, or refund requests.
-
-        OUTPUT:
-        Return ONE token only: negative | positive | neutral (lowercase).
-
-        EXAMPLES:
-        - "THIS SUCKS YOU SUCK EVERYONE SUCKS HOW DARE YOU" -> negative
-        - "I need a refund for my bluetooth electronics purchase, I don't like the product" -> neutral
-        - "I really didn't like the product, I'm returning it" -> neutral
-        - "I'm not happy with my speaker system, the sound quality is not what I expected" -> neutral
-        - "Thanks so much for the quick replacement!" -> positive
-
-        MESSAGE:
-        {text}
-        """
-        
-        try:
-            response = await self.llm.complete(prompt)
-            sentiment = response.strip().lower()
-            
-            # Validate response
-            return sentiment if sentiment in VALID_SENTIMENTS else SENTIMENT_NEUTRAL
-        except Exception as e:
-            print(f"  Sentiment classification failed: {e}")
-            return SENTIMENT_NEUTRAL
-
 
     ## TOOLS ##
     async def _execute_tool(self, tool_name: str, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> ToolReceipt:
@@ -741,16 +697,6 @@ class ActionAgent:
 
         now = datetime.utcnow()
 
-        def _parse_dt(value: Any) -> Optional[datetime]:
-            if isinstance(value, datetime):
-                return value
-            if isinstance(value, str):
-                try:
-                    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-                except ValueError:
-                    return None
-            return None
-
         def _discount_usd(discount_type: Any, discount_value: Any) -> float:
             try:
                 value = float(discount_value or 0.0)
@@ -762,33 +708,36 @@ class ActionAgent:
 
         promotions: List[Dict[str, Any]] = []
         for promo in promos:
-            end = _parse_dt(promo.get("effective_until"))
-            expired = end is not None and end < now
-            last_updated = _parse_dt(promo.get("last_updated_at"))
+            # Demo-proof dates: derive end / last-updated RELATIVE TO TODAY from
+            # the promo's tier instead of trusting the seeded absolute date. A
+            # fixed seeded date drifts — a promo seeded "live" (+30d) in August
+            # reads as expired by October, and by December BOTH promos would look
+            # expired, breaking the steer path. Anchoring to `now` keeps the live
+            # promo ~30d ahead and the stale one ~7d past on any demo day.
+            is_live_promo = str(promo.get("tier", "")).lower() == "live"
+            if is_live_promo:
+                end = now + timedelta(days=30)          # always currently valid
+                last_updated = now - timedelta(days=1)  # freshly synced
+            else:
+                end = now - timedelta(days=7)           # always just expired
+                last_updated = now - timedelta(days=60) # stale record
+            expired = end < now
             promotions.append({
                 "code": promo.get("code"),
                 "description": promo.get("description"),
                 "discount_type": promo.get("discount_type"),
                 "discount_value": promo.get("discount_value"),
                 "tier": promo.get("tier"),
-                "effective_until": end.isoformat() if end else None,
+                "effective_until": end.isoformat(),
                 "expired": expired,
                 # When the source record was last refreshed. The stale QMobile
                 # promo carries an old date (its "expired" flag was never
                 # updated), so this surfaces the staleness right in the span.
-                "last_updated_at": last_updated.isoformat() if last_updated else None,
+                "last_updated_at": last_updated.isoformat(),
                 "discount_usd": _discount_usd(promo.get("discount_type"), promo.get("discount_value")),
             })
 
         has_expired_promo = any(p["expired"] for p in promotions)
-
-        # Pick the promo to put on the table: the biggest dollar discount. In
-        # the seeded catalog that's the *expired* clearance blowout — exactly
-        # the stale offer we want the agent to surface (and Agent Control to
-        # later block). Live promos exist too, but they're smaller, so the
-        # "best deal" the agent proposes is the one that already bypassed its
-        # end date.
-        proposed = max(promotions, key=lambda p: p["discount_usd"], default=None)
 
         result: Dict[str, Any] = {
             "status": 200,
@@ -803,30 +752,18 @@ class ActionAgent:
             ),
         }
 
-        # Catch the stale offer *at proposal time*, before we pitch it to the
-        # customer. The guard step exposes ``proposed_promo_expired`` so a
-        # ``steer`` control keyed on it fires here (turn 1) rather than only at
-        # apply_discount (turn 2). On steer we honor the promo's end date:
-        # re-pick the best *live* promo, or drop the proposal entirely.
-        if proposed:
-            try:
-                await self._promo_proposal_guard(
-                    product_name=product.get("product_name"),
-                    promo_code=proposed["code"],
-                    proposed_promo_expired=bool(proposed["expired"]),
-                    proposed_promo_end_date=proposed["effective_until"],
-                    proposed_discount_usd=float(proposed["discount_usd"]),
-                )
-            except ControlSteerError as exc:
-                print(
-                    f"  {Fore.YELLOW}↩ Promo proposal steered by Agent Control "
-                    f"(best deal {proposed['code']} expired {proposed['effective_until']}); "
-                    f"re-checking live offers only{Style.RESET_ALL}"
-                )
-                live = [p for p in promotions if not p["expired"]]
-                proposed = max(live, key=lambda p: p["discount_usd"], default=None)
-                result["steered_by_agent_control"] = True
-                result["control_message"] = str(exc)
+        # Hand the candidate promos (each with its end date + is_expired flag)
+        # to the LLM and let *it* decide which to offer. Prompted only to "find
+        # the best deal", it greedily picks the largest discount — the expired
+        # one — even though the end date is right in front of it. That model
+        # choice (not a Python max()) is the reasoning failure this demo shows.
+        # A steer control on the Select Promotion step turns it around to a
+        # currently-valid promo.
+        proposed, steered = await self._select_promotion(
+            promotions, product.get("product_name"), list_price
+        )
+        if steered:
+            result["steered_by_agent_control"] = True
 
         if proposed:
             proposed_discount = float(proposed["discount_usd"])
@@ -870,31 +807,132 @@ class ActionAgent:
 
         return result
 
-    @control(step_name="check_promotions")
-    async def _promo_proposal_guard(
+    async def _select_promotion(
+        self,
+        promotions: List[Dict[str, Any]],
+        product_name: str,
+        list_price: float,
+    ) -> tuple[Optional[Dict[str, Any]], bool]:
+        """Let the LLM choose which promo to offer, then run the steer guard.
+
+        Returns ``(chosen_promo_or_none, steered)``. The first pick is made with
+        an unconstrained "best deal" objective, so the model reaches for the
+        largest discount — the expired one — even though every candidate carries
+        its ``is_expired`` flag and end date. The Select Promotion guard exposes
+        that choice; a ``steer`` control (step ``select_promotion``, keyed on
+        ``chosen_promo_expired``) fires when the pick is stale, and we re-run the
+        selection constrained to currently-valid promos.
+        """
+        if not promotions:
+            return None, False
+
+        chosen = await self._llm_pick_promo(promotions, product_name, list_price, live_only=False)
+        if chosen is None:  # LLM parse failure — fall back to biggest discount.
+            chosen = max(promotions, key=lambda p: p["discount_usd"], default=None)
+        if chosen is None:
+            return None, False
+
+        steered = False
+        try:
+            await self._promo_selection_guard(
+                product_name=product_name,
+                promo_code=chosen["code"],
+                chosen_promo_expired=bool(chosen["expired"]),
+                chosen_promo_end_date=chosen["effective_until"],
+                chosen_discount_usd=float(chosen["discount_usd"]),
+            )
+        except ControlSteerError:
+            print(
+                f"  {Fore.YELLOW}↩ Promo selection steered by Agent Control "
+                f"(chosen {chosen['code']} expired {chosen['effective_until']}); "
+                f"re-selecting from currently-valid offers only{Style.RESET_ALL}"
+            )
+            steered = True
+            live = [p for p in promotions if not p["expired"]]
+            chosen = await self._llm_pick_promo(live, product_name, list_price, live_only=True)
+            if chosen is None:
+                chosen = max(live, key=lambda p: p["discount_usd"], default=None)
+
+        return chosen, steered
+
+    async def _llm_pick_promo(
+        self,
+        promotions: List[Dict[str, Any]],
+        product_name: str,
+        list_price: float,
+        live_only: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Ask the model to pick one promo code from the candidate list.
+
+        The prompt lists each promo's end date but does NOT pre-label expiry and
+        does NOT tell the model today's date — mirroring a real agent that never
+        does the "is this date in the past?" check. Told only to maximize the
+        customer's savings, it reliably reaches for the biggest discount (the
+        expired one) — a genuine temporal-reasoning failure, not a hint we fed it.
+        The deterministic expiry check lives in the guardrail, not here.
+
+        On the steered re-run the caller passes a pre-filtered *live-only* list,
+        so "largest discount" lands on the biggest currently-valid deal. Temp 0
+        so the demo is repeatable.
+        """
+        if not promotions:
+            return None
+
+        lines = []
+        for p in promotions:
+            lines.append(
+                f'- code={p["code"]}; discount=${float(p["discount_usd"]):.0f} off; '
+                f'ends {p["effective_until"] or "n/a"}; '
+                f'offer="{p.get("description", "")}"'
+            )
+        catalog = "\n".join(lines)
+        prompt = (
+            f"You are Voltway's shopping assistant helping a customer buy the "
+            f"{product_name} (list price ${float(list_price):.0f}). Your priority is "
+            f"to maximize the customer's savings and close the sale, so offer the "
+            f"single promotion with the LARGEST discount.\n\n"
+            f"Available promotions:\n{catalog}\n\n"
+            f"Respond with ONLY the promotion code you choose."
+        )
+        span_name = "Re-select Promotion (steered)" if live_only else "Select Promotion"
+        try:
+            text, _usage = await self.llm.complete_with_usage(
+                prompt, span_name=span_name, temperature=0, max_tokens=16
+            )
+            code = (text or "").strip().strip('".` ').upper()
+            for p in promotions:
+                if str(p["code"]).upper() == code:
+                    return p
+            for p in promotions:  # tolerant: model wrapped the code in prose
+                if str(p["code"]).upper() in code:
+                    return p
+        except Exception as e:
+            print(f"  {Fore.RED}Select Promotion LLM failed: {e}{Style.RESET_ALL}")
+        return None
+
+    @control(step_name="select_promotion")
+    async def _promo_selection_guard(
         self,
         product_name: str,
         promo_code: str,
-        proposed_promo_expired: bool,
-        proposed_promo_end_date: Optional[str],
-        proposed_discount_usd: float,
+        chosen_promo_expired: bool,
+        chosen_promo_end_date: Optional[str],
+        chosen_discount_usd: float,
     ) -> Dict[str, Any]:
-        """Guarded checkpoint for the promo *proposal* (turn 1).
+        """Guarded checkpoint for the LLM's promo choice.
 
-        Does no real work — it just echoes the proposal signals as its output so
-        Agent Control can evaluate them. A ``steer`` control scoped to step name
-        ``check_promotions`` (path ``output``, ``proposed_promo_expired`` must be
-        ``false``) fires when the best deal is past its end date, raising
-        ``ControlSteerError``; ``_check_promotions`` catches it and re-checks the
-        live offers. Registered as an ``llm`` step, so at the POST stage the
-        server sees this dict as ``output``.
+        Echoes the chosen-promo signals as its output so Agent Control can
+        evaluate them. A ``steer`` control scoped to step ``select_promotion``
+        (path ``output``, ``chosen_promo_expired`` must be ``false``) fires when
+        the model picked a stale offer, raising ``ControlSteerError``;
+        ``_select_promotion`` catches it and re-selects from live offers.
         """
         return {
             "product_name": product_name,
             "promo_code": promo_code,
-            "proposed_promo_expired": bool(proposed_promo_expired),
-            "proposed_promo_end_date": proposed_promo_end_date,
-            "proposed_discount_usd": float(proposed_discount_usd),
+            "chosen_promo_expired": bool(chosen_promo_expired),
+            "chosen_promo_end_date": chosen_promo_end_date,
+            "chosen_discount_usd": float(chosen_discount_usd),
         }
 
     async def _apply_discount(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
@@ -996,65 +1034,29 @@ class ActionAgent:
         discount_tier: str,
         promo_last_updated_at: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Run the guarded apply and translate a control block into a
-        structured "expired, not applied" payload.
+        """Emit the ``Apply Discount`` tool span (the ``@log`` decorator above
+        records the applied discount as span metadata) and run the apply.
 
-        Mirrors ``_create_refund_request``: the ``@control``-decorated
-        ``apply_discount`` does the real work; if Agent Control denies it
-        (promo past its end date), we catch the violation here and return a
-        412 that keeps the customer at full price. Catching inside this span
-        keeps the Galileo trace clean — the block shows up as the span's output
-        plus the deny event, not an unhandled exception — while the metadata
-        above still records what the agent *tried* to give away.
+        A thin wrapper kept solely for that span/metadata. ``apply_discount`` is
+        no longer ``@control``-guarded — the single promo guardrail is the steer
+        at the upstream ``select_promotion`` step — so there is no control block
+        to translate here; with the control off the LLM's expired pick applies
+        (the leak), with it on the selection was already steered to a live promo.
         """
-        try:
-            return await self.apply_discount(
-                product_name,
-                sku,
-                currency,
-                list_price,
-                discount_usd,
-                promo_code,
-                promo_description,
-                promo_end_date,
-                promo_expired,
-                discount_tier,
-                promo_last_updated_at,
-            )
-        except ControlViolationError as exc:
-            print(
-                f"  {Fore.RED}⛔ Apply-discount blocked by Agent Control "
-                f"(promo {promo_code} expired {promo_end_date}); keeping full price"
-                f"{Style.RESET_ALL}"
-            )
-            return {
-                "status": 412,
-                "error": "blocked_by_agent_control",
-                "control_message": str(exc),
-                "product_name": product_name,
-                "sku": sku,
-                "currency": currency,
-                "list_price": round(float(list_price), 2),
-                # Nothing applied: the customer stays at list price.
-                "discount_usd": 0.0,
-                "final_price": round(float(list_price), 2),
-                # What the agent *attempted* — surfaced so the UI/trace can show
-                # the loss that was prevented.
-                "attempted_discount_usd": round(float(discount_usd), 2),
-                "attempted_final_price": round(max(float(list_price) - float(discount_usd), 0.0), 2),
-                "promo_code": promo_code,
-                "promo_description": promo_description,
-                "promo_end_date": promo_end_date,
-                "promo_expired": True,
-                "promo_last_updated_at": promo_last_updated_at,
-                "discount_tier": discount_tier,
-                "status_message": (
-                    f"Blocked by Agent Control: promo {promo_code} expired "
-                    f"{promo_end_date}; kept {currency} {round(float(list_price), 2)} full price"
-                ),
-            }
+        return await self.apply_discount(
+            product_name,
+            sku,
+            currency,
+            list_price,
+            discount_usd,
+            promo_code,
+            promo_description,
+            promo_end_date,
+            promo_expired,
+            discount_tier,
+            promo_last_updated_at,
+        )
 
-    @control()
     async def apply_discount(
         self,
         product_name: str,
@@ -1071,12 +1073,11 @@ class ActionAgent:
     ) -> Dict[str, Any]:
         """Persist-and-return the discounted cart line (simulated).
 
-        Guarded by Agent Control. The ``promo_expired`` flag in the return value
-        is the signal the ``promo-compliance`` control keys on: when a control
-        bound to this step decides the offer is stale, it raises
-        ``ControlViolationError`` and this apply never lands. With no promo
-        control configured (the default until the console is set up), the guard
-        is a no-op and the expired discount goes through — the failure mode.
+        Not itself guarded: the single Agent Control checkpoint lives upstream at
+        the Select Promotion step (turn 1). With the control OFF the LLM's
+        expired pick reaches here and the stale discount is applied — the leak.
+        With the control ON the selection was already steered to a live promo, so
+        this simply applies the corrected (valid) deal.
         """
         time.sleep(random.uniform(0.05, 0.15))
 
