@@ -706,6 +706,13 @@ class ActionAgent:
                 return round(list_price * value, 2)
             return round(value, 2)
 
+        def _discount_pct(discount_usd: float) -> int:
+            # Whole-number % of list price ($200/$1,000 = 20, $700/$1,000 = 70).
+            # Rounded to an int so the customer copy never shows a decimal.
+            if list_price <= 0:
+                return 0
+            return int(round(discount_usd / list_price * 100))
+
         promotions: List[Dict[str, Any]] = []
         for promo in promos:
             # Demo-proof dates: derive end / last-updated RELATIVE TO TODAY from
@@ -735,6 +742,9 @@ class ActionAgent:
                 # updated), so this surfaces the staleness right in the span.
                 "last_updated_at": last_updated.isoformat(),
                 "discount_usd": _discount_usd(promo.get("discount_type"), promo.get("discount_value")),
+                "discount_pct": _discount_pct(
+                    _discount_usd(promo.get("discount_type"), promo.get("discount_value"))
+                ),
             })
 
         has_expired_promo = any(p["expired"] for p in promotions)
@@ -771,6 +781,7 @@ class ActionAgent:
                 "proposed_promo_code": proposed["code"],
                 "proposed_promo_description": proposed["description"],
                 "proposed_discount_usd": proposed_discount,
+                "proposed_discount_pct": proposed.get("discount_pct", _discount_pct(proposed_discount)),
                 "proposed_final_price": round(max(list_price - proposed_discount, 0.0), 2),
                 "proposed_promo_expired": proposed["expired"],
                 "proposed_promo_end_date": proposed["effective_until"],
@@ -786,6 +797,7 @@ class ActionAgent:
                 "currency": currency,
                 "list_price": list_price,
                 "discount_usd": proposed_discount,
+                "discount_pct": proposed.get("discount_pct", _discount_pct(proposed_discount)),
                 "promo_code": proposed["code"],
                 "promo_description": proposed["description"],
                 "promo_end_date": proposed["effective_until"],
@@ -1011,6 +1023,10 @@ class ActionAgent:
         params={
             "metadata": lambda i: {
                 "discount_usd": f"{float(i.get('discount_usd', 0.0)):.2f}",
+                "discount_pct": str(
+                    int(round(float(i.get('discount_usd', 0.0)) / float(i.get('list_price', 0.0)) * 100))
+                    if float(i.get('list_price', 0.0)) > 0 else 0
+                ),
                 "list_price": f"{float(i.get('list_price', 0.0)):.2f}",
                 "promo_code": str(i.get("promo_code", "")),
                 "promo_expired": str(i.get("promo_expired", False)).lower(),
@@ -1082,6 +1098,10 @@ class ActionAgent:
         time.sleep(random.uniform(0.05, 0.15))
 
         final_price = round(max(float(list_price) - float(discount_usd), 0.0), 2)
+        discount_pct = (
+            int(round(float(discount_usd) / float(list_price) * 100))
+            if float(list_price) > 0 else 0
+        )
 
         return {
             "status": 201,
@@ -1091,6 +1111,7 @@ class ActionAgent:
             "currency": currency,
             "list_price": round(float(list_price), 2),
             "discount_usd": round(float(discount_usd), 2),
+            "discount_pct": discount_pct,
             "final_price": final_price,
             "promo_code": promo_code,
             "promo_description": promo_description,

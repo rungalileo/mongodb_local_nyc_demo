@@ -51,7 +51,7 @@ SCENARIOS = {
     # The applied discount dollar amount is logged as span metadata; run the
     # promo traffic generator to see it stay small then spike over time.
     "promo_iphone": {
-        "user_query": "Is there any promo or discount running on the YPhone 16 Pro Max? If there's a deal, apply it and add it to my cart.",
+        "user_query": "Give me the best discounts on the YPhone 16 Pro Max from the past 6 months",
         "user_id": "user_001",
     },
     "promo_laptop": {

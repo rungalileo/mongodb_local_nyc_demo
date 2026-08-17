@@ -106,6 +106,7 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
         resp = getattr(r, "response", None) or {}
         md: Dict[str, str] = {
             "discount_usd": f"{float(resp.get('discount_usd', 0.0) or 0.0):.2f}",
+            "discount_pct": str(int(resp.get("discount_pct", 0) or 0)),
             "list_price": f"{float(resp.get('list_price', 0.0) or 0.0):.2f}",
             "promo_expired": str(resp.get("promo_expired", False)).lower(),
             "apply_status": str(getattr(r, "status", "")),
@@ -130,6 +131,7 @@ def _promo_trace_metadata(state: Dict[str, Any]) -> Dict[str, str]:
         resp = getattr(r, "response", None) or {}
         md = {
             "discount_usd": f"{float(resp.get('proposed_discount_usd', 0.0) or 0.0):.2f}",
+            "discount_pct": str(int(resp.get("proposed_discount_pct", 0) or 0)),
             "list_price": f"{float(resp.get('list_price', 0.0) or 0.0):.2f}",
             "promo_expired": str(resp.get("proposed_promo_expired", False)).lower(),
             "promo_stage": "proposed",

@@ -7,7 +7,7 @@ like the live app (the graph runs once per chat turn, so each turn is its own
 (router -> action -> synthesizer; Records/Policy/Audit are skipped) so an
 injected trace is indistinguishable from a real one:
 
-    Turn 1 — "Any discount on X?"  (ops_desk_run)
+    Turn 1 — "best discounts on X in the past 6 months?"  (ops_desk_run)
       Router (workflow)
         └─ Classify Intent (llm)            -> promo_inquiry
       Action Agent (workflow)
@@ -67,7 +67,7 @@ Metadata keys on the **Apply Discount** span match the live app
 (``app/agents/action.py``) so a signal/eval built on this seeded data also fires
 on real traffic:
 
-  discount_usd (str), list_price (str), promo_code (str),
+  discount_usd (str), discount_pct (str), list_price (str), promo_code (str),
   promo_expired ("true"/"false"), promo_end_date (ISO str), discount_tier (str)
 
 Plus a numeric ``discount_usd_num`` (float) for easy time-series charting.
@@ -142,6 +142,13 @@ def _money(value: float) -> str:
     return f"{value:,.2f}"
 
 
+def _pct(discount_usd: float, list_price: float) -> int:
+    """Whole-number percent off, matching the live app's derivation."""
+    if list_price <= 0:
+        return 0
+    return int(round(discount_usd / list_price * 100))
+
+
 def _meta_num(value: float) -> str:
     """Metadata money string WITHOUT separators, matching the live app's
     ``f"{float(x):.2f}"`` so a signal/eval fires identically on seeded and
@@ -196,12 +203,14 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
         turn2_sentiment = "neutral"
 
     final_price = round(max(list_price - discount, 0.0), 2)
+    discount_pct = int(round(discount / list_price * 100)) if list_price > 0 else 0
     return {
         "product_name": product.product_name,
         "sku": product.sku,
         "currency": currency,
         "list_price": list_price,
         "discount_usd": discount,
+        "discount_pct": discount_pct,
         "final_price": final_price,
         "promo_code": promo["code"],
         "promo_description": promo["description"],
@@ -211,7 +220,7 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
         "discount_tier": promo["tier"],
         "discount_type": discount_type,
         # Per-turn user messages + sentiment (mirrors the live two-turn flow).
-        "turn1_user": f"Any discount on the {product.product_name}?",
+        "turn1_user": f"Give me the best discounts on the {product.product_name} from the past 6 months",
         "turn2_user": turn2_user,
         "turn1_sentiment": "neutral",   # asking a question reads neutral
         "turn2_sentiment": turn2_sentiment,
@@ -223,6 +232,7 @@ def _tool_metadata(p: Dict[str, Any]) -> Dict[str, Any]:
     plus a numeric key for charting."""
     return {
         "discount_usd": _meta_num(p["discount_usd"]),
+        "discount_pct": str(p["discount_pct"]),
         "list_price": _meta_num(p["list_price"]),
         "promo_code": p["promo_code"],
         "promo_expired": str(p["promo_expired"]).lower(),
@@ -244,6 +254,7 @@ def _apply_output(p: Dict[str, Any]) -> Dict[str, Any]:
         "currency": cur,
         "list_price": p["list_price"],
         "discount_usd": p["discount_usd"],
+        "discount_pct": p["discount_pct"],
         "final_price": p["final_price"],
         "promo_code": p["promo_code"],
         "promo_description": p["promo_description"],
@@ -274,13 +285,16 @@ def _check_output(p: Dict[str, Any], t0: datetime) -> Dict[str, Any]:
         "promotions": [
             {"code": LIVE_PROMO["code"], "expired": False,
              "last_updated_at": (t0 - timedelta(days=1)).isoformat(),
-             "discount_usd": LIVE_DISCOUNT_USD},
+             "discount_usd": LIVE_DISCOUNT_USD,
+             "discount_pct": _pct(LIVE_DISCOUNT_USD, p["list_price"])},
             {"code": EXPIRED_PROMO["code"], "expired": True,
              "last_updated_at": (t0 - timedelta(days=60)).isoformat(),
-             "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"])},
+             "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"]),
+             "discount_pct": _pct(min(EXPIRED_DISCOUNT_USD, p["list_price"]), p["list_price"])},
         ],
         "proposed_promo_code": p["promo_code"],
         "proposed_discount_usd": p["discount_usd"],
+        "proposed_discount_pct": p["discount_pct"],
         "proposed_promo_expired": p["promo_expired"],
     }
 
@@ -325,11 +339,12 @@ def _propose_text(p: Dict[str, Any]) -> str:
     pitch the offer by name and state its end date plainly."""
     cur = p["currency"]
     offer = _offer_label(p)
+    saved = f"{p['discount_pct']}% off ({cur} {_money(p['discount_usd'])})"
     end_h = _fmt_date(p["promo_end_date"])
     end_line = f" This offer is listed with an end date of {end_h}." if end_h else ""
     return (
         f"Great news — Voltway is running the {offer} on the "
-        f"{p['product_name']}, saving you {cur} {_money(p['discount_usd'])} and "
+        f"{p['product_name']}, saving you {saved} and "
         f"bringing it to {cur} {_money(p['final_price'])}.{end_line} "
         f"Want me to apply it and add it to your cart?"
     )
@@ -339,9 +354,10 @@ def _reply_text(p: Dict[str, Any]) -> str:
     """Turn-2 apply confirmation (the live Synthesizer Reply LLM span output)."""
     cur = p["currency"]
     offer = _offer_label(p)
+    saved = f"{p['discount_pct']}% off ({cur} {_money(p['discount_usd'])})"
     return (
         f"Good news — I applied the {offer} to the {p['product_name']}, "
-        f"saving you {cur} {_money(p['discount_usd'])}. Your new price is "
+        f"saving you {saved}. Your new price is "
         f"{cur} {_money(p['final_price'])}. I've added it to your cart."
     )
 
@@ -375,6 +391,7 @@ def _inject_turn1(logger: GalileoLogger, p: Dict[str, Any], t0: datetime) -> Non
     # branch (promo_stage="proposed", the proposed discount) + token totals.
     meta = {
         "discount_usd": _meta_num(p["discount_usd"]),
+        "discount_pct": str(p["discount_pct"]),
         "list_price": _meta_num(p["list_price"]),
         "promo_expired": str(p["promo_expired"]).lower(),
         "promo_stage": "proposed",
@@ -485,6 +502,7 @@ def _inject_turn2(logger: GalileoLogger, p: Dict[str, Any], t0: datetime) -> Non
     # (apply_status, the applied discount) + token totals.
     meta = {
         "discount_usd": _meta_num(p["discount_usd"]),
+        "discount_pct": str(p["discount_pct"]),
         "list_price": _meta_num(p["list_price"]),
         "promo_expired": str(p["promo_expired"]).lower(),
         "apply_status": "201",

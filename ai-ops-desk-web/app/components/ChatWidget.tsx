@@ -221,7 +221,7 @@ export function ChatWidget({
             {[
               "Can I get the receipt for my bluetooth headphones?",
               "Can you issue me a refund?",
-              "Any discount on the YPhone 16 Pro Max?",
+              "Give me the best discounts on the YPhone 16 Pro Max from the past 6 months",
             ].map((suggestion) => (
               <button
                 key={suggestion}
@@ -517,6 +517,7 @@ type DiscountShape = {
   currency?: string;
   list_price?: number;
   discount_usd?: number;
+  discount_pct?: number;
   final_price?: number;
   promo_code?: string;
   promo_description?: string;
@@ -559,6 +560,14 @@ function DiscountCard({ discount }: { discount: DiscountCardData }) {
   const savings = blocked ? discount.attempted_discount_usd : discount.discount_usd;
   const finalPrice = blocked ? discount.attempted_final_price : discount.final_price;
   const endDate = formatDate(discount.promo_end_date);
+  // Percent off, paired with the dollar amount. Prefer the backend-supplied
+  // whole-number pct; fall back to deriving it from savings / list price.
+  const pct =
+    typeof discount.discount_pct === "number"
+      ? discount.discount_pct
+      : typeof savings === "number" && typeof listPrice === "number" && listPrice > 0
+        ? Math.round((savings / listPrice) * 100)
+        : undefined;
 
   const accent = blocked
     ? "from-amber-50 to-orange-50 dark:from-amber-950/40 dark:to-orange-950/40"
@@ -609,7 +618,7 @@ function DiscountCard({ discount }: { discount: DiscountCardData }) {
             {blocked ? "Discount (not applied)" : `Discount ${discount.promo_code ? `· ${discount.promo_code}` : ""}`}
           </span>
           <span className={blocked ? "font-medium text-zinc-400 dark:text-zinc-500 line-through" : "font-medium text-emerald-600 dark:text-emerald-400"}>
-            −{formatMoney(savings, currency)}
+            −{formatMoney(savings, currency)}{pct != null ? ` · ${pct}% off` : ""}
           </span>
         </div>
       </div>

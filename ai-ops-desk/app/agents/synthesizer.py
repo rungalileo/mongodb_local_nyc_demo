@@ -55,6 +55,30 @@ def _offer_label(description: Optional[str], code: Optional[str]) -> str:
     return "promotion"
 
 
+def _savings(discount: Any, discount_pct: Any, money: Any) -> str:
+    """Customer-facing savings phrase pairing the % with the dollar amount.
+
+    Renders as ``"70% off (USD 700.00)"`` when both a percentage and a dollar
+    amount are present, falls back to just the dollar amount, then to a generic
+    "a discount" when nothing usable is available. The ``money`` argument is the
+    caller's currency formatter so the two reply builders stay consistent.
+    """
+    money_str = money(discount) if discount is not None else None
+    pct_int: Optional[int] = None
+    try:
+        if discount_pct is not None:
+            pct_int = int(round(float(discount_pct)))
+    except (TypeError, ValueError):
+        pct_int = None
+    if pct_int and money_str:
+        return f"{pct_int}% off ({money_str})"
+    if pct_int:
+        return f"{pct_int}% off"
+    if money_str:
+        return money_str
+    return "a discount"
+
+
 def _summarize_actions(action_output: Optional[ActionOutput]) -> List[Dict[str, Any]]:
     """Strip tool receipts down to the fields the LLM should see."""
     if not action_output or not action_output.tool_receipts:
@@ -217,6 +241,7 @@ def _render_discount_reply(action_output: Optional[ActionOutput]) -> Optional[st
     currency = resp.get("currency") or "USD"
     offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
     discount = resp.get("discount_usd")
+    discount_pct = resp.get("discount_pct")
     final_price = resp.get("final_price")
 
     def _money(value: Any) -> str:
@@ -225,7 +250,7 @@ def _render_discount_reply(action_output: Optional[ActionOutput]) -> Optional[st
         except (TypeError, ValueError):
             return f"{currency} {value}"
 
-    saved = _money(discount) if discount is not None else "a discount"
+    saved = _savings(discount, discount_pct, _money)
     price_line = (
         f" Your new price is {_money(final_price)}." if final_price is not None else ""
     )
@@ -273,6 +298,7 @@ def _render_promo_propose_reply(action_output: Optional[ActionOutput]) -> Option
     currency = resp.get("currency") or "USD"
     offer = _offer_label(resp.get("proposed_promo_description"), code)
     discount = resp.get("proposed_discount_usd")
+    discount_pct = resp.get("proposed_discount_pct")
     final_price = resp.get("proposed_final_price")
     list_price = resp.get("list_price")
 
@@ -282,7 +308,7 @@ def _render_promo_propose_reply(action_output: Optional[ActionOutput]) -> Option
         except (TypeError, ValueError):
             return f"{currency} {value}"
 
-    saved = _money(discount) if discount is not None else "a discount"
+    saved = _savings(discount, discount_pct, _money)
     list_line = f" (normally {_money(list_price)})" if list_price is not None else ""
     price_line = (
         f", saving you {saved} that brings it to {_money(final_price)}{list_line}"
@@ -456,6 +482,7 @@ class SynthesizerAgent:
         currency = resp.get("currency") or "USD"
         offer = _offer_label(resp.get("promo_description"), resp.get("promo_code"))
         discount = resp.get("discount_usd")
+        discount_pct = resp.get("discount_pct")
         final_price = resp.get("final_price")
 
         def _money(value: Any) -> str:
@@ -464,9 +491,17 @@ class SynthesizerAgent:
             except (TypeError, ValueError):
                 return f"{currency} {value}"
 
+        pct_str: Optional[str] = None
+        try:
+            if discount_pct is not None:
+                pct_str = f"{int(round(float(discount_pct)))}%"
+        except (TypeError, ValueError):
+            pct_str = None
+
         facts = {
             "product": product,
             "offer": offer,
+            "percent_off": pct_str,
             "amount_saved": _money(discount) if discount is not None else "a discount",
             "new_price": _money(final_price) if final_price is not None else None,
         }
@@ -474,7 +509,8 @@ class SynthesizerAgent:
             "You are Voltway's shopping assistant. The customer just confirmed, so "
             "you APPLIED a promotion and added the item to their cart. Write ONE "
             "warm, confident sentence (max two) confirming it. Name the offer, the "
-            "amount saved, and the new price, and mention it's added to the cart. Do "
+            "percent off paired with the dollar amount saved (e.g. \"70% off — USD "
+            "700.00\"), and the new price, and mention it's added to the cart. Do "
             "NOT mention expiry, validity, or dates. Be upbeat.\n\n"
             f"Facts:\n{json.dumps(facts, indent=2, default=str)}\n\nReply:"
         )

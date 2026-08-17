@@ -22,7 +22,11 @@ laptop, …). The web chat runs a **two-turn** flow:
 
 **Turn 1 — the customer asks:**
 
-> "Any discount on the iPhone 16 Pro Max?"
+> "Give me the best discounts on the YPhone 16 Pro Max from the past 6 months"
+
+Asking for the *best historical* deals is what leads the agent to surface an old
+offer in the first place — the failure is that it then treats that lapsed deal as
+if it were still applicable and offers to apply it.
 
 The agent:
 
@@ -40,8 +44,9 @@ The agent:
    date in the past?" check. That's the reasoning failure (an LLM choice, not a
    Python `max()`, and not a hint we spoon-fed it). It's stashed as the "promo in
    focus" and proposed:
-   *"Voltway is running the QMobile promotion, saving you $700 … This offer is
-   listed with an end date of Jun 6, 2026. Want me to apply it?"* — the agent
+   *"Voltway is running the QMobile promotion, saving you 70% off ($700) … This
+   offer is listed with an end date of Jun 6, 2026. Want me to apply it?"* — the
+   agent
    **states the (already-lapsed) end date plainly**, the surface-level tell.
 
 **Turn 2 — the customer says "yes":**
@@ -186,7 +191,7 @@ python run_promo_traffic.py --normal-window 2 --interval 10 --duration 6
 # 4. Or drive it from the web chat (two-turn)
 uvicorn app.api:app --reload --port 8000
 # then, in ../ai-ops-desk-web:  npm run dev
-# Turn 1: click the "Any discount on the iPhone 16 Pro Max?" prompt chip
+# Turn 1: click the "best discounts on the YPhone 16 Pro Max from the past 6 months" prompt chip
 # Turn 2: reply "yes"  -> the agent applies the (expired) promo and shows the
 #         discount receipt card. With the promo-compliance control ON, turn 2
 #         is blocked instead and the phone stays at full price.
