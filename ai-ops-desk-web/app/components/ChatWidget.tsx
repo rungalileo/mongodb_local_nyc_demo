@@ -170,11 +170,14 @@ export function ChatWidget({
         <ChatIcon />
       </button>
 
-      {/* Push-in side panel */}
+      {/* Intercom-style floating popup — anchored bottom-right above the launcher */}
       <aside
-        className={`fixed top-0 right-0 z-40 h-screen w-full md:w-[560px] lg:w-[640px] xl:w-[720px] bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-zinc-800 shadow-2xl flex flex-col transform transition-transform duration-300 ease-out ${
-          open ? "translate-x-0" : "translate-x-full"
+        className={`fixed bottom-24 right-5 z-40 flex flex-col overflow-hidden w-[calc(100vw-2.5rem)] sm:w-[400px] h-[640px] max-h-[calc(100vh-8rem)] rounded-2xl bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 shadow-2xl origin-bottom-right transition-all duration-200 ease-out ${
+          open
+            ? "opacity-100 scale-100 translate-y-0 pointer-events-auto"
+            : "opacity-0 scale-95 translate-y-3 pointer-events-none"
         }`}
+        aria-hidden={!open}
       >
         <div className="px-5 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center gap-3 shrink-0">
           <div className="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 grid place-items-center text-white text-sm font-bold">
@@ -217,23 +220,31 @@ export function ChatWidget({
           }}
           className="border-t border-zinc-200 dark:border-zinc-800 p-4 shrink-0 bg-white dark:bg-zinc-950"
         >
-          <div className="flex flex-wrap gap-2 mb-2">
-            {[
-              "Can I get the receipt for my bluetooth headphones?",
-              "Can you issue me a refund?",
-              "Give me the best discounts on the YPhone 16 Pro Max from the past 6 months",
-            ].map((suggestion) => (
-              <button
-                key={suggestion}
-                type="button"
-                onClick={() => send(suggestion)}
-                disabled={busy}
-                className="rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
-              >
-                {suggestion}
-              </button>
-            ))}
-          </div>
+          {/* Suggestion chips — short labels that send the full prompt. Hidden
+              once the customer has sent their first message. */}
+          {!turns.some((t) => t.role === "user") && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {[
+                { label: "Get my receipt", query: "Can I get the receipt for my bluetooth headphones?" },
+                { label: "Request a refund", query: "Can you issue me a refund?" },
+                {
+                  label: "YPhone discounts",
+                  query:
+                    "Give me the best discounts on the YPhone 16 Pro Max from the past 6 months",
+                },
+              ].map((suggestion) => (
+                <button
+                  key={suggestion.label}
+                  type="button"
+                  onClick={() => send(suggestion.query)}
+                  disabled={busy}
+                  className="rounded-full border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 hover:bg-zinc-100 dark:hover:bg-zinc-800 px-3 py-1 text-xs text-zinc-700 dark:text-zinc-300 transition-colors disabled:opacity-40"
+                >
+                  {suggestion.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <textarea
               rows={1}

@@ -21,15 +21,11 @@ export default function Home() {
   const me = identityFor(userId);
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-x-hidden">
-      {/* Storefront shifts left to make room for the chat panel on md+ screens. */}
-      <div
-        className={`transition-[margin] duration-300 ease-out ${
-          chatOpen ? "md:mr-[560px] lg:mr-[640px] xl:mr-[720px]" : "mr-0"
-        }`}
-      >
-        <Storefront me={me} />
-      </div>
+    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 overflow-x-clip">
+      {/* The assistant is an Intercom-style popup that overlays the page, so the
+          storefront stays put (no shift) when the chat opens. `overflow-x-clip`
+          prevents horizontal scroll without breaking the sticky header. */}
+      <Storefront me={me} />
 
       <ChatWidget
         me={me}
