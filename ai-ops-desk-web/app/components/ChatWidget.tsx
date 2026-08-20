@@ -159,15 +159,13 @@ export function ChatWidget({
 
   return (
     <>
-      {/* Launcher bubble — hidden while panel is open */}
+      {/* Launcher bubble — always visible; toggles the panel (close when open) */}
       <button
-        aria-label="Open support chat"
-        onClick={() => onOpenChange(true)}
-        className={`fixed bottom-5 right-5 z-30 w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg grid place-items-center transition-all ${
-          open ? "opacity-0 pointer-events-none scale-90" : "opacity-100 scale-100 hover:scale-105"
-        }`}
+        aria-label={open ? "Close support chat" : "Open support chat"}
+        onClick={() => onOpenChange(!open)}
+        className="fixed bottom-5 right-5 z-50 w-14 h-14 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg grid place-items-center transition-transform hover:scale-105"
       >
-        <ChatIcon />
+        {open ? <CloseIcon /> : <ChatIcon />}
       </button>
 
       {/* Intercom-style floating popup — anchored bottom-right above the launcher */}
