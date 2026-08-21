@@ -29,6 +29,15 @@ from app.scenarios import SCENARIOS
 from app.rag.atlas_client import get_atlas_client
 from app.agent_control_setup import init_agent_control, agent_control_status
 
+# Re-apply the last provisioned live target (if any) OVER the .env defaults, so
+# a project created via the Ops button stays associated across restarts /
+# --reload instead of snapping back to GALILEO_PROJECT from .env.
+from app.promo_demo_provision import restore_active_target
+_restored_target = restore_active_target()
+if _restored_target:
+    print(f"[startup] restored live target → project={_restored_target['project']!r} "
+          f"log_stream={_restored_target['log_stream']!r}")
+
 
 app = FastAPI(title="AI Operations Desk API")
 
@@ -62,17 +71,22 @@ class PromoDemoRequest(BaseModel):
     """Ops-view request to spin up a fresh promo demo project.
 
     The button only asks for a project + log stream name; the traffic rate has
-    sensible defaults (~10 expired-promo mistakes/hour over 3 hours). The eval
-    metric and steer control are created by hand in the Console, so those
-    default to off here.
+    sensible defaults (~10 expired-promo mistakes/hour over 3 hours of COUNT),
+    spread across the last ``spread_days`` with realistic webstore seasonality.
+    By default it also enables the demo metric set and attaches the (disabled)
+    steer control before injecting.
     """
     project_name: str
     log_stream_name: str = "Default"
     mistakes_per_hour: float = 10.0
     hours: float = 3.0
     correct_per_hour: float = 6.0
-    create_metric: bool = False
-    create_control: bool = False
+    # Spread the injected sessions across the last N days (seasonal shape).
+    spread_days: float = 21.0
+    tz_name: str = "America/Los_Angeles"
+    # Enable the demo metric set and attach the disabled steer control by default.
+    create_metric: bool = True
+    create_control: bool = True
     # When true, repoint the live app at the new project/log stream so all
     # subsequent manual chat traces log there (overriding the env project).
     set_active: bool = True
@@ -139,6 +153,8 @@ async def create_promo_demo(req: PromoDemoRequest):
             mistakes_per_hour=req.mistakes_per_hour,
             hours=req.hours,
             correct_per_hour=req.correct_per_hour,
+            spread_days=req.spread_days,
+            tz_name=req.tz_name,
             create_metric=req.create_metric,
             create_control=req.create_control,
             set_active=req.set_active,

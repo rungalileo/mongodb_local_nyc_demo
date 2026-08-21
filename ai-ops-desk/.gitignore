@@ -101,6 +101,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Runtime state: last provisioned live Galileo target (Ops button)
+.galileo_active_target.json
+
 # Environments
 .env
 .venv

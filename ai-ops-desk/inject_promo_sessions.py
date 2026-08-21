@@ -136,6 +136,69 @@ _SENTIMENT_SCORE = {"positive": 0.95, "neutral": 0.55, "negative": 0.15}
 # a turn-2 timestamp never lands in the future.
 _TURN_GAP_S = 30.0
 
+# --- Realistic webstore traffic shape (for multi-day spreads) --------------
+# Relative interaction weight by LOCAL hour of day: overnight trough, morning
+# ramp, a lunch bump (~12-13), and the evening peak (~19-21) where a consumer
+# store does most of its business.
+_HOUR_WEIGHTS = {
+    0: 0.15, 1: 0.10, 2: 0.08, 3: 0.07, 4: 0.08, 5: 0.12,
+    6: 0.25, 7: 0.45, 8: 0.70, 9: 0.90, 10: 1.00, 11: 1.10,
+    12: 1.30, 13: 1.25, 14: 1.05, 15: 1.05, 16: 1.10, 17: 1.20,
+    18: 1.45, 19: 1.60, 20: 1.65, 21: 1.45, 22: 1.00, 23: 0.55,
+}
+# Relative weight by weekday (Mon=0 … Sun=6): weekends clearly busier.
+_DOW_WEIGHTS = {0: 0.90, 1: 0.90, 2: 0.90, 3: 0.95, 4: 1.10, 5: 1.55, 6: 1.50}
+
+
+def _seasonal_starts(n: int, spread_days: float, tz_name: str, rng: random.Random) -> List[datetime]:
+    """Return ``n`` turn-1 start timestamps (UTC) spread across the last
+    ``spread_days`` following diurnal + weekly seasonality, so injected promo
+    traffic reads as a believable multi-day webstore stream instead of one
+    block. Each start reserves ``_TURN_GAP_S`` headroom so the turn-2 (apply)
+    trace never lands in the future.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(tz_name)
+    end = datetime.now(tz) - timedelta(seconds=_TURN_GAP_S)
+    start = end - timedelta(days=max(0.1, float(spread_days)))
+
+    # Hourly buckets in local time, weighted by hour-of-day × day-of-week × noise.
+    buckets: List[datetime] = []
+    cur = start.replace(minute=0, second=0, microsecond=0)
+    while cur <= end:
+        buckets.append(cur)
+        cur += timedelta(hours=1)
+    if not buckets:
+        buckets = [start]
+
+    weights = [
+        _HOUR_WEIGHTS[b.hour] * _DOW_WEIGHTS[b.weekday()] * rng.uniform(0.85, 1.15)
+        for b in buckets
+    ]
+    total_w = sum(weights) or 1.0
+
+    # Fractional expected count per bucket -> integers via largest-remainder so
+    # the totals sum to exactly ``n``.
+    exact = [w / total_w * n for w in weights]
+    counts = [int(x) for x in exact]
+    for i in sorted(range(len(exact)), key=lambda j: exact[j] - counts[j], reverse=True)[
+        : n - sum(counts)
+    ]:
+        counts[i] += 1
+
+    stamps: List[datetime] = []
+    for b, c in zip(buckets, counts):
+        if c <= 0:
+            continue
+        hour_end = min(b + timedelta(hours=1), end)
+        span = max(1.0, (hour_end - b).total_seconds())
+        for _ in range(c):
+            ts_local = min(b + timedelta(seconds=rng.uniform(0, span)), end)
+            stamps.append(ts_local.astimezone(timezone.utc))
+    stamps.sort()
+    return stamps
+
 
 def _money(value: float) -> str:
     """Human-readable money for reply text (with thousands separators)."""
@@ -596,21 +659,28 @@ def inject_sessions(
     flush_every: int = 20,
     window_minutes: Optional[float] = None,
     mistakes_last: bool = False,
+    spread_days: float = 0.0,
+    tz_name: str = "America/Los_Angeles",
 ) -> Dict[str, Any]:
     """Inject synthetic promo traces at a steady per-hour rate.
 
     Callable form of the CLI so the Ops-view "create demo project" button can
     reuse the exact same traffic. Roughly ``mistakes_per_hour`` MISTAKE sessions
     (expired $700 clearance applied) and ``correct_per_hour`` CORRECT sessions
-    (live $200 student deal) are spread across the last ``hours`` and shuffled,
-    so the timestamps read as a believable "~N mistakes per hour" stream.
-    Returns a summary dict for the API response.
+    (live $200 student deal) are generated; the counts still come from
+    ``mistakes_per_hour``/``correct_per_hour`` × ``hours``.
 
-    ``window_minutes`` overrides the spread: when set, all sessions land in the
-    last N minutes (bunched near "now") instead of across ``hours`` — handy so
-    the batch sits at the top of the Console trace table. ``mistakes_last``
-    gives the expired-promo (positive-sentiment) sessions the newest timestamps
-    so they surface at the very top rather than shuffled through the batch.
+    Timestamp spread (three modes, in priority order):
+    - ``spread_days`` > 0: spread the sessions across the last N days following
+      realistic webstore seasonality (busier evenings/lunch, busier weekends) in
+      ``tz_name`` — the "date-relevant, not all from one day" mode used by the
+      Ops button.
+    - ``window_minutes`` set: bunch everything into the last N minutes (top of
+      the trace table).
+    - otherwise: even spread across the last ``hours``.
+
+    ``mistakes_last`` (only meaningful without ``spread_days``) gives the
+    expired-promo sessions the newest timestamps so they surface at the top.
     """
     if not project or not log_stream:
         raise ValueError("project and log_stream are required")
@@ -635,17 +705,27 @@ def inject_sessions(
     if n == 0:
         raise ValueError("nothing to inject: mistakes_per_hour and correct_per_hour are both 0")
 
-    if window_minutes is not None:
-        window = timedelta(minutes=max(0.0, float(window_minutes)))
-        span_label = f"{float(window_minutes):g}m"
+    # Pick turn-1 start timestamps (one per session, ascending).
+    if spread_days and float(spread_days) > 0:
+        # Date-relevant multi-day spread with realistic webstore seasonality.
+        span_label = f"{float(spread_days):g}d seasonal ({tz_name})"
+        starts = _seasonal_starts(n, float(spread_days), tz_name, rng)
     else:
-        window = timedelta(hours=hours)
-        span_label = f"{hours:g}h"
-    start = datetime.now(timezone.utc) - window
-    # Reserve headroom for the intra-conversation gap so a turn-2 (apply) trace
-    # never lands in the future: distribute turn-1 starts across [start, now-gap].
-    usable_s = max(1.0, window.total_seconds() - _TURN_GAP_S)
-    step_s = usable_s / max(n, 1)
+        if window_minutes is not None:
+            window = timedelta(minutes=max(0.0, float(window_minutes)))
+            span_label = f"{float(window_minutes):g}m"
+        else:
+            window = timedelta(hours=hours)
+            span_label = f"{hours:g}h"
+        start = datetime.now(timezone.utc) - window
+        # Reserve headroom for the intra-conversation gap so a turn-2 (apply)
+        # trace never lands in the future: spread turn-1 starts over [start, now-gap].
+        usable_s = max(1.0, window.total_seconds() - _TURN_GAP_S)
+        step_s = usable_s / max(n, 1)
+        starts = [
+            start + timedelta(seconds=i * step_s + rng.uniform(0.0, step_s * 0.5))
+            for i in range(n)
+        ]
 
     logger = GalileoLogger(project=project, log_stream=log_stream)
     print(
@@ -659,10 +739,9 @@ def inject_sessions(
     expired_applied = 0
     for i, kind in enumerate(kinds):
         p = _plan_session(kind, rng)
-        # Even spacing plus a little jitter so timestamps don't look robotic,
-        # while staying inside the [start, now] window.
-        jitter = rng.uniform(0.0, step_s * 0.5)
-        t0 = start + timedelta(seconds=i * step_s + jitter)
+        # ``starts`` is ascending; ``kinds`` is shuffled, so expired-promo
+        # mistakes are sprinkled across the whole window rather than clumped.
+        t0 = starts[i]
         _inject_one(logger, p, t0)
 
         if p["promo_expired"]:
@@ -712,6 +791,12 @@ def main() -> None:
     ap.add_argument("--mistakes-last", action="store_true",
                     help="Give the expired-promo (positive-sentiment) sessions the newest "
                          "timestamps so the spike shows at the very top.")
+    ap.add_argument("--spread-days", type=float, default=0.0,
+                    help="Spread sessions across the last N DAYS with realistic webstore "
+                         "seasonality (busier evenings/lunch + weekends). Overrides --hours/"
+                         "--window-minutes spread. 0 = keep the last-N-hours behavior.")
+    ap.add_argument("--tz", dest="tz_name", default="America/Los_Angeles",
+                    help="Store timezone for the --spread-days day/night curve.")
     args = ap.parse_args()
 
     if not args.project or not args.log_stream:
@@ -730,6 +815,8 @@ def main() -> None:
         flush_every=args.flush_every,
         window_minutes=args.window_minutes,
         mistakes_last=args.mistakes_last,
+        spread_days=args.spread_days,
+        tz_name=args.tz_name,
     )
 
     console = summary.get("console_url")

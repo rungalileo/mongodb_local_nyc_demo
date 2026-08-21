@@ -29,6 +29,7 @@ control guards them too.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 # Hard cap on injected traces. Each session is a real trace written to Galileo,
@@ -37,7 +38,7 @@ MAX_SESSIONS = int(os.getenv("PROMO_DEMO_MAX_SESSIONS", "500"))
 
 # ---- LLM-as-judge metric --------------------------------------------------
 
-PROMO_METRIC_NAME = os.getenv("PROMO_METRIC_NAME", "expired-promo-applied")
+PROMO_METRIC_NAME = os.getenv("PROMO_METRIC_NAME", "Expired Promo Applied")
 
 PROMO_METRIC_PROMPT = (
     "You are auditing a single AI shopping-assistant conversation (one full "
@@ -65,77 +66,28 @@ PROMO_METRIC_PROMPT = (
     "Judge only from the trace content."
 )
 
-# Second trace-level judge: customer sentiment. Pairs with the expired-promo
-# metric to tell the demo story — the bigger (expired) discounts delight the
-# customer, so "positive sentiment" TRUE spikes on exactly the leaky traces.
-SENTIMENT_METRIC_NAME = os.getenv("SENTIMENT_METRIC_NAME", "customer-positive-sentiment")
+# Customer-sentiment judge. This one is NOT created by the button — it is
+# assumed to already exist in the org (built by hand as a multi-label
+# positive/neutral/negative metric); the button only *enables* it by name.
+CUSTOMER_SENTIMENT_METRIC_NAME = os.getenv("SENTIMENT_METRIC_NAME", "customer-sentiment")
 
-SENTIMENT_METRIC_PROMPT = (
-    "You are auditing a single AI shopping-assistant conversation (one full "
-    "trace). Classify the CUSTOMER's sentiment (not the assistant's tone) into "
-    "exactly one of three labels: positive, neutral, or negative.\n\n"
-    "Signals to use: the customer's own messages / reactions in the trace, and "
-    "any sentiment fields exposed in the trace (e.g. a \"Classify Sentiment\" "
-    "step output or `customer_sentiment` / `sentiment_score` metadata).\n\n"
-    "Labels:\n"
-    "- positive: the customer expresses delight, excitement, gratitude, or clear "
-    "enthusiasm (for example, reacting happily to a discount or eagerly accepting "
-    "an offer).\n"
-    "- neutral: the customer is calm and matter-of-fact — just asking a question "
-    "or acknowledging, with no strong feeling either way.\n"
-    "- negative: the customer is annoyed, frustrated, dissatisfied, or upset.\n\n"
-    "Respond with ONLY one word: positive, neutral, or negative. Judge only from "
-    "the trace content."
-)
+# Galileo built-in (preset) scorers to enable alongside the custom judges. These
+# exist org-wide, so they resolve by name; they also drive LLM-evaluator cost.
+PRESET_METRIC_NAMES: List[str] = [
+    "instruction_adherence",
+    "reasoning_coherence",
+    "output_tone",
+    "context_adherence",
+    "completeness",
+    "tool_error_rate",
+]
 
 # ---- Agent Control steer control -----------------------------------------
+# The control itself (name below) is built by hand in the Console — see the
+# "Agent Control steer control" table in EXPIRED_PROMO_DEMO.md for its exact
+# scope / JSON evaluator / steering message. The button only *binds* it.
 
-STEER_CONTROL_NAME = os.getenv("PROMO_STEER_CONTROL_NAME", "promo-selection-steer")
-
-_STEER_MESSAGE = (
-    "The promotion you selected is past its end date (expired). Do NOT propose or "
-    "apply it. Re-select from the available promotions and consider ONLY offers "
-    "whose end date is still in the future; if none are live, tell the customer "
-    "there is no active promotion and keep full price."
-)
-
-
-def _steer_control_data() -> Dict[str, Any]:
-    """Control definition for the promo-selection steer.
-
-    Scope: the ``select_promotion`` guard step, POST stage — the point where the
-    LLM has just chosen which promo to offer. The JSON evaluator fires
-    (``matched=True``) when validation FAILS, so a schema that only passes when
-    ``chosen_promo_expired`` is ``false`` triggers the steer precisely when the
-    model picked an expired promo, turning it around to re-select a live one.
-    """
-    return {
-        "description": (
-            "Steer the agent when it selects an expired promo; re-select from "
-            "currently-valid offers honoring the end date."
-        ),
-        "enabled": True,
-        "execution": "server",
-        "scope": {"step_names": ["select_promotion"], "stages": ["post"]},
-        "condition": {
-            "selector": {"path": "output"},
-            "evaluator": {
-                "name": "json",
-                "config": {
-                    "json_schema": {
-                        "type": "object",
-                        "required": ["chosen_promo_expired"],
-                        "properties": {"chosen_promo_expired": {"const": False}},
-                    }
-                },
-            },
-        },
-        "action": {
-            "decision": "steer",
-            "steering_context": {"message": _STEER_MESSAGE},
-        },
-        "tags": ["promo", "expired", "steer"],
-    }
+STEER_CONTROL_NAME = os.getenv("PROMO_STEER_CONTROL_NAME", "promo-proposal-steer")
 
 
 # ---- Steps ----------------------------------------------------------------
@@ -209,70 +161,113 @@ def _ensure_log_stream(project_name: str, log_stream_name: str, project_id: Opti
     }
 
 
-def _create_llm_judge(name: str, prompt: str, description: str, tags: List[str]) -> Dict[str, Any]:
-    """Create one trace-level custom LLM-as-judge metric (idempotent)."""
-    from galileo.metrics import create_custom_llm_metric
-    from galileo.schema.metrics import StepType
+def _enable_metrics_resilient(log_stream, names: List[str]) -> Dict[str, Any]:
+    """Enable ``names`` on the stream, tolerating names that don't resolve.
 
-    result: Dict[str, Any] = {"name": name}
+    ``enable_metrics`` REPLACES the enabled set and raises ValueError listing any
+    unknown names before registering anything, so one bad name would enable
+    nothing. We catch that, drop the unknown names it reports, and retry — so the
+    metrics that DO exist get enabled even if one custom judge (e.g.
+    ``expired-promo-applied`` or ``customer-sentiment``) hasn't been created in
+    the org yet; the missing ones come back in ``skipped``.
+    """
+    remaining = list(names)
+    skipped: List[str] = []
+    last_error: Optional[str] = None
+    for _ in range(len(names) + 1):
+        if not remaining:
+            break
+        try:
+            log_stream.enable_metrics(remaining)
+            return {"enabled": list(remaining), "skipped": skipped}
+        except ValueError as e:  # "non-existent metrics are specified: 'x', 'y'"
+            last_error = str(e)
+            unknown = [u for u in re.findall(r"'([^']+)'", last_error) if u in remaining]
+            if not unknown:
+                break
+            skipped.extend(unknown)
+            remaining = [n for n in remaining if n not in unknown]
+        except Exception as e:  # network/other — report and stop
+            last_error = f"{type(e).__name__}: {e}"
+            break
+    return {"enabled": list(remaining), "skipped": skipped, "error": last_error}
+
+
+def _resolve_metric_identifiers(names: List[str]) -> Dict[str, str]:
+    """Map each requested metric name to the scorer's actual **id** when a
+    normalized (trimmed + case-insensitive) match exists in the org.
+
+    This defends against Console data-entry quirks — e.g. a custom judge saved
+    as ``'Expired Promo Applied '`` with a trailing space, which an exact label
+    match silently misses. Enabling by id sidesteps name/label/casing entirely.
+    Names with no match are omitted (the caller passes them through unchanged so
+    presets still resolve by slug and truly-missing ones get reported).
+    """
+    from galileo.scorers import Scorers
+
     try:
-        create_custom_llm_metric(
-            name=name,
-            user_prompt=prompt,
-            node_level=StepType.trace,
-            description=description,
-            tags=tags,
-        )
-        result["created"] = True
-    except Exception as e:  # already exists, or transient — enabling still works
-        result["created"] = False
-        result["create_note"] = f"{type(e).__name__}: {e}"
-    return result
+        rows = Scorers().list()
+    except Exception:
+        return {}
+    norm: Dict[str, Any] = {}
+    for r in rows:
+        for key in (getattr(r, "name", None), getattr(r, "label", None)):
+            if key and getattr(r, "id", None):
+                norm.setdefault(key.strip().casefold(), r)
+    resolved: Dict[str, str] = {}
+    for n in names:
+        m = norm.get(n.strip().casefold())
+        if m is not None:
+            resolved[n] = str(m.id)
+    return resolved
 
 
 def _ensure_metric(log_stream) -> Dict[str, Any]:
-    """Create the trace-level LLM judges (idempotent) and enable them on the
-    stream. Two judges: the expired-promo flag and the customer-sentiment flag.
+    """Enable the demo metric set on the stream BEFORE injection, so metrics
+    score arriving traces. This ONLY enables — nothing is created; all of these
+    are expected to already exist in the org/console:
+
+      - ``Expired Promo Applied``   (custom; built by hand)
+      - ``customer-sentiment``      (custom; built by hand)
+      - 6 Galileo presets           (instruction/reasoning/tone/context/completeness/tool-error)
+
+    Custom names are resolved to their scorer **id** first (trim/case-insensitive)
+    so trailing spaces or casing in the Console don't break the match; anything
+    that still doesn't resolve is skipped and reported in ``skipped_metrics``
+    rather than failing the whole set.
     """
-    metrics = [
-        _create_llm_judge(
-            PROMO_METRIC_NAME,
-            PROMO_METRIC_PROMPT,
-            "Flags traces where the agent proposed or applied an expired/outdated promo.",
-            ["promo", "expired"],
-        ),
-        _create_llm_judge(
-            SENTIMENT_METRIC_NAME,
-            SENTIMENT_METRIC_PROMPT,
-            "Flags traces where the customer expresses positive sentiment (delight/enthusiasm).",
-            ["promo", "sentiment"],
-        ),
-    ]
-    result: Dict[str, Any] = {"name": PROMO_METRIC_NAME, "metrics": metrics}
-    names = [PROMO_METRIC_NAME, SENTIMENT_METRIC_NAME]
-    try:
-        log_stream.enable_metrics(names)
-        result["enabled"] = True
-        result["enabled_metrics"] = names
-        result["status"] = "ok"
-    except Exception as e:
-        result["enabled"] = False
-        result["status"] = "enable_failed"
-        result["error"] = f"{type(e).__name__}: {e}"
+    names = [PROMO_METRIC_NAME, CUSTOMER_SENTIMENT_METRIC_NAME, *PRESET_METRIC_NAMES]
+    id_by_name = _resolve_metric_identifiers(names)
+    # Enable by id where we resolved one; otherwise pass the name through.
+    identifiers = [id_by_name.get(n, n) for n in names]
+    name_by_id = {v: k for k, v in id_by_name.items()}
+
+    result: Dict[str, Any] = {"name": PROMO_METRIC_NAME}
+    outcome = _enable_metrics_resilient(log_stream, identifiers)
+    # Translate ids back to human names for readable reporting.
+    result["enabled_metrics"] = [name_by_id.get(x, x) for x in outcome.get("enabled", [])]
+    result["skipped_metrics"] = [name_by_id.get(x, x) for x in outcome.get("skipped", [])]
+    if outcome.get("error"):
+        result["enable_error"] = outcome["error"]
+    result["enabled"] = bool(result["enabled_metrics"])
+    result["status"] = "ok" if result["enabled"] else "enable_failed"
     return result
 
 
 def _ensure_steer_control(log_stream_id: Optional[str]) -> Dict[str, Any]:
-    """Create the steer control (idempotent) and bind it to the log stream.
-
-    Uses the ACE REST API directly with the Galileo-API-Key header, mirroring
+    """Attach the EXISTING ``promo-proposal-steer`` control to the log stream,
+    DISABLED — it shows up *attached but inactive* so the operator flips it on
+    live. This does NOT create the control: it is expected to already exist in
+    the org (built by hand). We look it up by name and bind it; if it isn't
+    found we report ``not_found`` rather than creating it. Uses the ACE REST API
+    with the Galileo-API-Key header, mirroring
     ``agent_control_setup._manual_log_stream_binding_status``.
     """
     server_url = os.environ.get("AGENT_CONTROL_URL")
     api_key = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
     api_key_header = os.environ.get("AGENT_CONTROL_API_KEY_HEADER", "Galileo-API-Key")
 
-    result: Dict[str, Any] = {"name": STEER_CONTROL_NAME}
+    result: Dict[str, Any] = {"name": STEER_CONTROL_NAME, "created": False}
     if not server_url or not api_key:
         result["status"] = "skipped"
         result["reason"] = "AGENT_CONTROL_URL or API key not set"
@@ -288,49 +283,41 @@ def _ensure_steer_control(log_stream_id: Optional[str]) -> Dict[str, Any]:
         headers = {api_key_header: api_key}
         control_id: Optional[Any] = None
         with httpx.Client(base_url=server_url.rstrip("/"), timeout=30.0) as client:
-            create_resp = client.put(
-                "/api/v1/controls",
-                json={"name": STEER_CONTROL_NAME, "data": _steer_control_data()},
-                headers=headers,
-            )
-            if create_resp.status_code == 409:
-                # Already exists — look it up by name. NOTE: the list endpoint
-                # rejects limit>100 with 422, so keep this at 100 (matches the
-                # bindings endpoint cap). Using 200 here silently broke the
-                # re-bind path: a pre-existing control never got its binding.
-                result["created"] = False
-                listing = client.get("/api/v1/controls", params={"limit": 100}, headers=headers)
-                listing.raise_for_status()
-                items = listing.json()
-                items = items.get("controls", items) if isinstance(items, dict) else items
-                for c in items or []:
-                    if isinstance(c, dict) and c.get("name") == STEER_CONTROL_NAME:
-                        control_id = c.get("id") or c.get("control_id")
-                        break
-            else:
-                create_resp.raise_for_status()
-                payload = create_resp.json()
-                control_id = payload.get("control_id") or payload.get("id")
-                result["created"] = True
+            # Resolve the pre-existing control by name (do NOT create it). NOTE:
+            # the list endpoint rejects limit>100 with 422, so keep this at 100.
+            listing = client.get("/api/v1/controls", params={"limit": 100}, headers=headers)
+            listing.raise_for_status()
+            items = listing.json()
+            items = items.get("controls", items) if isinstance(items, dict) else items
+            for c in items or []:
+                if isinstance(c, dict) and c.get("name") == STEER_CONTROL_NAME:
+                    control_id = c.get("id") or c.get("control_id")
+                    break
 
             if control_id is None:
-                result["status"] = "create_failed"
-                result["error"] = "could not resolve control id"
+                result["status"] = "not_found"
+                result["error"] = (
+                    f"control {STEER_CONTROL_NAME!r} does not exist in this org — "
+                    "create it in the Console first (it is not auto-created)."
+                )
                 return result
             result["control_id"] = control_id
 
+            # Bind DISABLED: attached to the stream but not active until the
+            # operator toggles it on during the demo.
             bind_resp = client.put(
                 "/api/v1/control-bindings/by-key",
                 json={
                     "target_type": "log_stream",
                     "target_id": log_stream_id,
                     "control_id": control_id,
-                    "enabled": True,
+                    "enabled": False,
                 },
                 headers=headers,
             )
             bind_resp.raise_for_status()
             result["bound"] = True
+            result["binding_enabled"] = False
             result["status"] = "ok"
 
             # Verify the binding actually exists on the injected stream so a
@@ -354,6 +341,147 @@ def _ensure_steer_control(log_stream_id: Optional[str]) -> Dict[str, Any]:
         result["status"] = "error"
         result["error"] = f"{type(e).__name__}: {e}"
     return result
+
+
+# Persisted "active target" so a provisioned project survives process restarts
+# (uvicorn --reload on every code save, or a container restart). Without this,
+# api.py's ``load_dotenv(override=True)`` snaps GALILEO_PROJECT back to the .env
+# default on the next boot and live chat drifts back to the old stream.
+_ACTIVE_TARGET_FILE = os.environ.get(
+    "PROMO_DEMO_STATE_FILE",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".galileo_active_target.json"),
+)
+
+
+def _persist_active_target(
+    project_name: str,
+    log_stream_name: str,
+    project_id: Optional[str],
+    log_stream_id: Optional[str],
+) -> Optional[str]:
+    """Write the current live target to disk so ``restore_active_target`` can
+    re-apply it after a restart. Best-effort; returns an error string or None.
+    """
+    import json
+
+    try:
+        with open(_ACTIVE_TARGET_FILE, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "project": project_name,
+                    "log_stream": log_stream_name,
+                    "project_id": project_id,
+                    "log_stream_id": log_stream_id,
+                },
+                f,
+            )
+        return None
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"
+
+
+def _target_exists(project_id: Optional[str], log_stream_id: Optional[str]) -> str:
+    """Check whether a pinned target still exists in Galileo.
+
+    Returns ``"ok"`` (both present), ``"missing"`` (project or stream was
+    definitively deleted — ``.get`` returned None), or ``"unknown"`` (couldn't
+    verify: no creds / network error / no ids to check). We only self-heal on
+    ``"missing"`` so a transient blip never wipes a valid target.
+    """
+    if not project_id or not log_stream_id:
+        return "unknown"  # nothing pinned to verify by id
+    if not (os.environ.get("GALILEO_API_KEY") and os.environ.get("GALILEO_API_URL")):
+        return "unknown"  # SDK not configured to check
+    try:
+        from galileo.projects import Projects
+        from galileo.log_streams import LogStreams
+
+        try:
+            from galileo.exceptions import NotFoundError
+        except Exception:  # pragma: no cover - defensive import
+            NotFoundError = ()  # type: ignore[assignment]
+
+        try:
+            if Projects().get(id=str(project_id)) is None:
+                return "missing"
+            if LogStreams().get(id=str(log_stream_id), project_id=str(project_id)) is None:
+                return "missing"
+            return "ok"
+        except NotFoundError:
+            # A deleted project/stream 404s here — that's the case we heal.
+            return "missing"
+    except Exception:
+        # No creds, network blip, or a non-404 error (e.g. malformed id):
+        # don't wipe a target we couldn't actually disprove.
+        return "unknown"
+
+
+def restore_active_target() -> Optional[Dict[str, Any]]:
+    """Re-apply a previously provisioned live target on process startup.
+
+    Call this AFTER ``load_dotenv`` so it takes precedence over the .env
+    defaults. Sets the same env vars ``apply_live_target`` does, so the first
+    trace and Agent Control init both bind to the last-provisioned stream. Safe
+    no-op when no state file exists. Returns the restored target or None.
+
+    Self-heal: if the pinned project/log stream was deleted, the state file is
+    cleared and we fall back to the .env default instead of pinning a dead
+    target (which would 404 every trace silently). A transient/uncheckable
+    result keeps the target as-is.
+    """
+    import json
+
+    try:
+        with open(_ACTIVE_TARGET_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+    project = (data.get("project") or "").strip()
+    log_stream = (data.get("log_stream") or "").strip()
+    if not project or not log_stream:
+        return None
+
+    project_id = data.get("project_id")
+    log_stream_id = data.get("log_stream_id")
+
+    # Don't pin a target that no longer exists — revert to the .env default.
+    if _target_exists(project_id, log_stream_id) == "missing":
+        clear_active_target()
+        print(
+            f"[startup] persisted live target {project!r}/{log_stream!r} no longer "
+            "exists — cleared it; falling back to the .env default."
+        )
+        return None
+
+    os.environ["GALILEO_PROJECT"] = project
+    os.environ["GALILEO_LOG_STREAM"] = log_stream
+    if project_id and log_stream_id:
+        os.environ["GALILEO_PROJECT_ID"] = str(project_id)
+        os.environ["GALILEO_LOG_STREAM_ID"] = str(log_stream_id)
+    else:
+        for k in ("GALILEO_PROJECT_ID", "GALILEO_LOG_STREAM_ID"):
+            os.environ.pop(k, None)
+    return {
+        "project": project,
+        "log_stream": log_stream,
+        "project_id": project_id,
+        "log_stream_id": log_stream_id,
+    }
+
+
+def clear_active_target() -> bool:
+    """Delete the persisted live target so the app reverts to the .env default
+    on the next restart. Returns True if a file was removed."""
+    try:
+        os.remove(_ACTIVE_TARGET_FILE)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
 
 
 def apply_live_target(
@@ -422,6 +550,14 @@ def apply_live_target(
     except Exception as e:  # noqa: BLE001
         result["agent_control_error"] = str(e)
 
+    # Persist so this target survives a process restart (uvicorn --reload /
+    # container restart), where load_dotenv would otherwise revert to .env.
+    persist_err = _persist_active_target(project_name, log_stream_name, project_id, log_stream_id)
+    if persist_err:
+        result["persist_error"] = persist_err
+    else:
+        result["persisted"] = True
+
     return result
 
 
@@ -432,16 +568,26 @@ def provision_promo_demo(
     mistakes_per_hour: float = 10.0,
     hours: float = 3.0,
     correct_per_hour: float = 6.0,
-    create_metric: bool = False,
-    create_control: bool = False,
+    spread_days: float = 21.0,
+    tz_name: str = "America/Los_Angeles",
+    create_metric: bool = True,
+    create_control: bool = True,
     set_active: bool = True,
 ) -> Dict[str, Any]:
     """Provision a fresh promo demo project. Blocking; run in a thread.
 
-    By default this ONLY creates the project + log stream and injects traffic —
-    the LLM-as-judge metric (eval) and the steer control are meant to be built
-    by hand in the Console for a fresh org, so ``create_metric`` /
-    ``create_control`` default to off.
+    Steps (all best-effort, reported independently):
+      1. Create project + log stream (idempotent).
+      2. Enable the demo metric set on the stream (expired-promo-applied +
+         customer-sentiment + 6 presets) BEFORE injecting, so metrics score the
+         arriving traces. (``create_metric``)
+      3. Attach the ``promo-proposal-steer`` control to the stream, DISABLED
+         (``create_control``).
+      4. Inject the promo traffic. Session COUNT still comes from
+         ``mistakes_per_hour``/``correct_per_hour`` × ``hours``, but the
+         timestamps are spread across the last ``spread_days`` with realistic
+         webstore seasonality (busier evenings/lunch + weekends).
+      5. Repoint the live app at this project/stream (``set_active``).
     """
     project_name = (project_name or "").strip()
     log_stream_name = (log_stream_name or "").strip()
@@ -497,6 +643,8 @@ def provision_promo_demo(
         mistakes_per_hour=mistakes_per_hour,
         hours=hours,
         correct_per_hour=correct_per_hour,
+        spread_days=spread_days,
+        tz_name=tz_name,
     )
     steps["injection"] = {"status": "ok", **injection}
 
@@ -519,7 +667,10 @@ def provision_promo_demo(
         "log_stream_name": log_stream_name,
         "console_url": console,
         "metric_name": PROMO_METRIC_NAME if create_metric else None,
-        "metric_names": [PROMO_METRIC_NAME, SENTIMENT_METRIC_NAME] if create_metric else None,
+        "metric_names": (
+            [PROMO_METRIC_NAME, CUSTOMER_SENTIMENT_METRIC_NAME, *PRESET_METRIC_NAMES]
+            if create_metric else None
+        ),
         "steer_control_name": STEER_CONTROL_NAME if create_control else None,
         "active_target": set_active,
         "steps": steps,

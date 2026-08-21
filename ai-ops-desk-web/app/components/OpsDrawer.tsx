@@ -285,10 +285,12 @@ function PromoDemoPanel() {
   return (
     <div className="space-y-2.5">
       <p className="text-xs text-zinc-500">
-        Creates the Galileo project + log stream and feeds it a stream of promo
-        conversations — about ~10 expired-promo mistakes per hour (backdated over
-        the last few hours), mixed with correct live-promo runs. Build the eval
-        metric and steer control by hand in the Console.
+        Creates the Galileo project + log stream, enables the demo evals
+        (expired-promo, customer-sentiment + presets), attaches the
+        <code className="mx-1">promo-proposal-steer</code> control (disabled),
+        then injects promo conversations — expired-promo mistakes mixed with
+        correct live-promo runs, spread across the last few weeks with realistic
+        webstore seasonality (busier evenings/weekends).
       </p>
 
       <label className="block">
@@ -336,6 +338,8 @@ function PromoDemoPanel() {
               </div>
               <StepLine label="Project" status={stepStatus("project")} />
               <StepLine label="Log stream" status={stepStatus("log_stream")} />
+              <StepLine label="Evals" status={stepStatus("metric")} />
+              <StepLine label="Steer control" status={stepStatus("steer_control")} />
               <StepLine label="Injection" status={stepStatus("injection")} />
               <StepLine label="Live routing" status={stepStatus("set_active")} />
               {(() => {

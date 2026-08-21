@@ -37,6 +37,8 @@ export type PromoDemoRequest = {
   mistakes_per_hour?: number;
   hours?: number;
   correct_per_hour?: number;
+  spread_days?: number;
+  tz_name?: string;
   create_metric?: boolean;
   create_control?: boolean;
   set_active?: boolean;

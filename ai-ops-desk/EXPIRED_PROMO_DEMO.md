@@ -319,7 +319,7 @@ guard is a **no-op** and the LLM's expired pick sails through — that's the def
 failure mode you demo first. `apply_discount` is **not** guarded: consolidating to
 one control at the selection step keeps the trace clean and the story singular.
 
-To turn it on, create the **`promo-selection-steer`** control from section
+To turn it on, create the **`promo-proposal-steer`** control from section
 **B** above (Console for ACE) — scoped to step `select_promotion`, `post` stage,
 JSON evaluator that steers when `chosen_promo_expired == true`.
 
@@ -340,19 +340,35 @@ name** and **log stream name**, and it does everything below in one call
 
 1. Creates the project (idempotent).
 2. Creates the log stream (idempotent).
-3. Creates + enables the two trace-level **LLM-as-judge** metrics
-   (`expired-promo-applied` and `customer-positive-sentiment`) on that log stream.
-4. Creates + binds the **steer control** (`promo-selection-steer`, scoped to the
-   `select_promotion` step) to that log stream.
-5. Injects the spike-shaped traffic (same generator as `inject_promo_sessions.py`).
-6. **Routes live chat here** (checkbox *"Route live chat traces here"*, on by
-   default): repoints the running app at the new project/log stream so **every
-   subsequent manual chat run logs there**, overriding the startup
-   `GALILEO_PROJECT` / `GALILEO_LOG_STREAM`. Because the live app resolves its
-   target from those env vars at trace time, flipping them in-process is enough
-   — no restart. This also re-points Agent Control, so the steer control you
-   just bound now guards live chat too (not only the injected traces). Uncheck
-   it to provision a project without hijacking where live traces go.
+3. **Enables** (does not create) the demo metric set on that log stream
+   **before** injecting, so metrics score arriving traces: `expired-promo-applied`,
+   `customer-sentiment`, plus 6 Galileo presets — `instruction_adherence`,
+   `reasoning_coherence`, `output_tone`, `context_adherence`, `completeness`,
+   `tool_error_rate`. **All of these must already exist in the org/console** (the
+   two custom judges are built by hand — see A/A2 below; the presets are
+   built-in). Enabling is resilient: any name that doesn't resolve is skipped and
+   reported rather than failing the whole set.
+4. **Binds** (does not create) the existing **steer control**
+   (`promo-proposal-steer`, scoped to the `select_promotion` step) to that log
+   stream **disabled** — it shows up attached but inactive so you toggle it on
+   live during the demo. If the control doesn't exist in the org, the step
+   reports `not_found` (create it in the Console first — see B below).
+5. Injects the promo traffic (same generator as `inject_promo_sessions.py`).
+   Session **count** comes from the per-hour rates × `hours`, but timestamps are
+   spread across the last `spread_days` (default 21) with realistic webstore
+   seasonality — busier evenings/lunch and weekends, in `tz_name` (default
+   `America/Los_Angeles`) — so it's date-relevant, not all clustered at "now".
+6. **Routes live chat here** (on by default): repoints the running app at the
+   new project/log stream so **every subsequent manual chat run logs there**,
+   overriding the startup `GALILEO_PROJECT` / `GALILEO_LOG_STREAM`. The live app
+   resolves its target from those env vars at trace time, so flipping them
+   in-process takes effect immediately — no restart. This also re-points Agent
+   Control, so the steer control now guards live chat too (not only the injected
+   traces). **The target is persisted** to `.galileo_active_target.json` and
+   re-applied on startup, so it survives `uvicorn --reload` / container restarts
+   (which would otherwise snap `GALILEO_PROJECT` back to `.env` via
+   `load_dotenv(override=True)`). To revert to the `.env` default, delete that
+   file (or call `clear_active_target()`) and restart.
 
 Each sub-step reports its own status in the response, so if the org's API key
 can't create Agent Control controls (or the metric already exists), the rest
@@ -404,20 +420,21 @@ chart it next to the expired-promo flag: the big (expired) discounts delight the
 customer, so "positive sentiment" TRUE spikes on exactly the leaky traces.
 
 1. **Metrics → New metric → LLM-as-judge** (custom LLM scorer).
-2. **Name**: `customer-positive-sentiment`.
+2. **Name**: `customer-sentiment`.
 3. **Node/Scoreable level**: **Trace**.
 4. **Output type**: **Categorical** with labels `positive`, `neutral`, `negative`.
-5. **Prompt** (paste `SENTIMENT_METRIC_PROMPT` from
-   `app/promo_demo_provision.py` verbatim): *"…Classify the CUSTOMER's sentiment
-   into exactly one of three labels: positive, neutral, or negative… Respond with
-   ONLY one word."* It reads the customer's own messages plus any
-   `customer_sentiment` / `sentiment_score` metadata and the `Classify Sentiment`
-   step.
+5. **Prompt**: *"…Classify the CUSTOMER's sentiment into exactly one of three
+   labels: positive, neutral, or negative… Respond with ONLY one word."* It reads
+   the customer's own messages plus any `customer_sentiment` / `sentiment_score`
+   metadata and the `Classify Sentiment` step.
 6. **Enable** it on the same demo **log stream**.
 
-> The one-click Ops button provisions **both** judges together (`_ensure_metric`
-> creates + enables `expired-promo-applied` and `customer-positive-sentiment`).
-> Chart both over time to show the two spikes rising together.
+> The one-click Ops button only **enables** the demo set on the stream
+> (`expired-promo-applied`, `customer-sentiment`, and the 6 presets) — it does
+> **not** create any of them. Build both custom judges by hand once (A + A2);
+> the presets are built-in. Any that don't exist yet are skipped and reported
+> rather than failing the others. Chart the expired-promo flag next to customer
+> sentiment to show the two spikes rising together.
 
 ### B) Agent Control steer control (selection-time)
 
@@ -425,7 +442,7 @@ Create a control on the log stream's **Controls** tab (ACE):
 
 | Field | Value |
 |-------|-------|
-| **Name** | `promo-selection-steer` |
+| **Name** | `promo-proposal-steer` |
 | **Execution** | Server |
 | **Stages** | `POST` |
 | **Step name(s)** | `select_promotion` (exact; Regex off) |
