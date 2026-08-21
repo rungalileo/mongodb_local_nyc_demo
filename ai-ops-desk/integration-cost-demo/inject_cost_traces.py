@@ -47,19 +47,26 @@ pass that exact value on the second run (don't rely on the "now" default twice).
 
 Usage
 -----
+Run with the app's venv (paths below assume you're in ``ai-ops-desk/``; the
+script also works from any directory since it self-locates the package root):
+
     # dry run — print the traffic plan, peak day, price + real-spend estimates
-    python inject_cost_traces.py --dry-run --traces 1000 --num-metrics 5
+    ./.venv/bin/python integration-cost-demo/inject_cost_traces.py \
+        --dry-run --traces 1000 --num-metrics 5
 
     # inject into the LLM-judge project (enable its metrics on a CHEAP model first)
-    python inject_cost_traces.py --project "LLM-evals" --log-stream "Default" \
+    ./.venv/bin/python integration-cost-demo/inject_cost_traces.py \
+        --project "LLM-evals" --log-stream "Default" \
         --traces 1000 --num-metrics 5 --end "2026-08-20T15:00:00"
 
     # then the Luna project, SAME window -> identical timestamps for overlay
-    python inject_cost_traces.py --project "Luna-evals" --log-stream "Default" \
+    ./.venv/bin/python integration-cost-demo/inject_cost_traces.py \
+        --project "Luna-evals" --log-stream "Default" \
         --traces 1000 --num-metrics 5 --end "2026-08-20T15:00:00"
 
 Requires the same Galileo env as the app (GALILEO_API_KEY, GALILEO_API_URL,
-GALILEO_CONSOLE_URL). Create the project + log stream in the Console first.
+GALILEO_CONSOLE_URL) in ai-ops-desk/.env. Create the project + log stream in
+the Console first. See README.md in this folder for the full walkthrough.
 """
 from __future__ import annotations
 
@@ -73,7 +80,15 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Runnable from anywhere: put the ai-ops-desk/ package root (this file's
+# grandparent) on sys.path and load its .env explicitly, so `import app.*` and
+# the Galileo creds resolve no matter what the current working directory is.
+import sys
+
+_PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PKG_ROOT not in sys.path:
+    sys.path.insert(0, _PKG_ROOT)
+load_dotenv(os.path.join(_PKG_ROOT, ".env"))
 import app.tls_trust  # noqa: F401  (trust the OS cert store / corp proxy)
 
 
