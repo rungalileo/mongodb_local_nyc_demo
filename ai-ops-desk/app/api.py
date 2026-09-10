@@ -92,6 +92,48 @@ class PromoDemoRequest(BaseModel):
     set_active: bool = True
 
 
+class CostDemoRequest(BaseModel):
+    """Ops-view request to extend the Integration-cost demo curves.
+
+    Everything defaults: leave start/end blank to continue each project's cost
+    curve from the last day it dropped to $0 up to now. The phased job sets the
+    evaluator model price to $1,830 (LLM_Evals) then $80 (Luna_Evals), injects
+    identical-timestamp traffic into each, waits for scoring, then removes the
+    price override.
+    """
+    start: Optional[str] = None
+    end: Optional[str] = None
+    tz_name: str = "America/Los_Angeles"
+    seed: int = 7
+    # Leave blank to target the real LLM_Evals / Luna_Evals projects. Set to
+    # throwaway names to test the flow against disposable projects.
+    llm_project: Optional[str] = None
+    luna_project: Optional[str] = None
+    llm_price: Optional[float] = None
+    luna_price: Optional[float] = None
+
+
+class CostDemoDeleteRequest(BaseModel):
+    """Delete throwaway test projects created by a cost-demo test run. The real
+    LLM_Evals / Luna_Evals projects are protected and cannot be deleted here."""
+    names: List[str]
+
+
+class CostDemoFixRequest(BaseModel):
+    """Heal scoring gaps (e.g. a $0 day from an evaluator system error). Scans
+    BOTH projects and re-injects whichever dipped at its correct frozen price
+    (LLM_Evals @ $1,830, Luna_Evals @ $80). Leave start/end blank to auto-detect
+    the broken window per project; pass throwaway names to heal sandbox projects."""
+    llm_project: Optional[str] = None
+    luna_project: Optional[str] = None
+    llm_price: Optional[float] = None
+    luna_price: Optional[float] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+    tz_name: str = "America/Los_Angeles"
+    seed: int = 7
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True}
@@ -162,6 +204,71 @@ async def create_promo_demo(req: PromoDemoRequest):
         return result
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ops/cost_demo")
+async def start_cost_demo_endpoint(req: CostDemoRequest):
+    """Kick off the phased Integration-cost injection (LLM_Evals + Luna_Evals).
+
+    Returns immediately; the work runs in a background thread because it sets
+    org-wide model prices and waits for async scoring between the two projects.
+    Poll ``GET /api/ops/cost_demo/status`` for progress.
+    """
+    from app.cost_demo_provision import start_cost_demo
+
+    try:
+        return start_cost_demo(
+            start=req.start,
+            end=req.end,
+            tz_name=req.tz_name,
+            seed=req.seed,
+            llm_project=req.llm_project,
+            luna_project=req.luna_project,
+            llm_price=req.llm_price,
+            luna_price=req.luna_price,
+        )
+    except Exception as e:
+        return {"started": False, "reason": f"{type(e).__name__}: {e}"}
+
+
+@app.get("/api/ops/cost_demo/status")
+async def cost_demo_status_endpoint():
+    """Progress snapshot for the running/last Integration-cost injection."""
+    from app.cost_demo_provision import get_cost_demo_status
+
+    return get_cost_demo_status()
+
+
+@app.post("/api/ops/cost_demo/fix")
+async def cost_demo_fix_endpoint(req: CostDemoFixRequest):
+    """Heal scoring gaps for one project (delete + re-inject the broken window
+    at the correct price). Runs in the background; poll the status endpoint."""
+    from app.cost_demo_provision import start_cost_fix
+
+    try:
+        return start_cost_fix(
+            llm_project=req.llm_project,
+            luna_project=req.luna_project,
+            llm_price=req.llm_price,
+            luna_price=req.luna_price,
+            start=req.start,
+            end=req.end,
+            tz_name=req.tz_name,
+            seed=req.seed,
+        )
+    except Exception as e:
+        return {"started": False, "reason": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ops/cost_demo/delete")
+async def cost_demo_delete_endpoint(req: CostDemoDeleteRequest):
+    """Delete throwaway test projects (real LLM_Evals / Luna_Evals protected)."""
+    from app.cost_demo_provision import delete_cost_demo_projects
+
+    try:
+        return await asyncio.to_thread(delete_cost_demo_projects, req.names)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 @app.post("/api/chat")

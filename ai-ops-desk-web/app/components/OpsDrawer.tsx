@@ -3,12 +3,17 @@
 import { useEffect, useState } from "react";
 import {
   ChatResult,
+  CostDemoStatus,
   PromoDemoResult,
   Scenario,
   User,
   createPromoDemo,
+  deleteCostDemoProjects,
+  fixCostDemo,
+  getCostDemoStatus,
   getScenarios,
   getUsers,
+  startCostDemo,
 } from "@/lib/api";
 import { Identity, identityFor } from "@/lib/identity";
 import { AgentRow, AgentStatus } from "./ChatWidget";
@@ -115,6 +120,10 @@ export function OpsDrawer({
 
           <Section title="Generate demo traffic">
             <PromoDemoPanel />
+          </Section>
+
+          <Section title="Integration cost demo">
+            <CostDemoPanel />
           </Section>
 
           <Section title="Agent timeline">
@@ -385,6 +394,315 @@ function PromoDemoPanel() {
       )}
     </div>
   );
+}
+
+function CostDemoPanel() {
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [status, setStatus] = useState<CostDemoStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [testMode, setTestMode] = useState(false);
+  const [llmProject, setLlmProject] = useState("Cost_Sandbox_LLM");
+  const [lunaProject, setLunaProject] = useState("Cost_Sandbox_Luna");
+  const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const running = status?.state === "running" || starting;
+
+  // Poll status while a run is active.
+  useEffect(() => {
+    if (status?.state !== "running") return;
+    const id = setInterval(() => {
+      getCostDemoStatus().then(setStatus).catch(() => {});
+    }, 2500);
+    return () => clearInterval(id);
+  }, [status?.state]);
+
+  // On mount, pick up any run already in progress (survives drawer close).
+  useEffect(() => {
+    getCostDemoStatus()
+      .then((s) => {
+        if (s && s.state !== "idle") setStatus(s);
+      })
+      .catch(() => {});
+  }, []);
+
+  const run = async () => {
+    if (running) return;
+    setStarting(true);
+    setDeleteMsg(null);
+    try {
+      const r = await startCostDemo({
+        start: start.trim() || undefined,
+        end: end.trim() || undefined,
+        llm_project: testMode ? llmProject.trim() || undefined : undefined,
+        luna_project: testMode ? lunaProject.trim() || undefined : undefined,
+      });
+      if (!r.started) {
+        setStatus({
+          state: "error",
+          error: r.reason || "could not start",
+          steps: [],
+        });
+      } else {
+        const s = await getCostDemoStatus();
+        setStatus(s);
+      }
+    } catch (e) {
+      setStatus({
+        state: "error",
+        error: e instanceof Error ? e.message : String(e),
+        steps: [],
+      });
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const fix = async () => {
+    if (running) return;
+    setStarting(true);
+    setDeleteMsg(null);
+    try {
+      const r = await fixCostDemo({
+        llm_project: testMode ? llmProject.trim() || undefined : undefined,
+        luna_project: testMode ? lunaProject.trim() || undefined : undefined,
+        start: start.trim() || undefined,
+        end: end.trim() || undefined,
+      });
+      if (!r.started) {
+        setStatus({ state: "error", error: r.reason || "could not start", steps: [] });
+      } else {
+        setStatus(await getCostDemoStatus());
+      }
+    } catch (e) {
+      setStatus({
+        state: "error",
+        error: e instanceof Error ? e.message : String(e),
+        steps: [],
+      });
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const deleteTestProjects = async () => {
+    if (deleting || running) return;
+    setDeleting(true);
+    setDeleteMsg(null);
+    try {
+      const r = await deleteCostDemoProjects([
+        llmProject.trim(),
+        lunaProject.trim(),
+      ]);
+      if (r.error) {
+        setDeleteMsg(`Error: ${r.error}`);
+      } else {
+        const parts = Object.entries(r.results ?? {}).map(
+          ([n, v]) => `${n}: ${v.status}`,
+        );
+        setDeleteMsg(parts.join(" · ") || "Nothing to delete");
+      }
+    } catch (e) {
+      setDeleteMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const win = status?.window;
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-xs text-zinc-500">
+        Extends the <code>LLM_Evals</code> (~$1,830/1M) and{" "}
+        <code>Luna_Evals</code> (~$80/1M) cost curves from where they dropped to
+        $0 up to now. Runs in two phases (sets the evaluator price, injects
+        identical-timestamp traffic, waits for scoring), then removes the price
+        override.
+      </p>
+
+      <label className="flex items-center gap-2 text-xs">
+        <input
+          type="checkbox"
+          checked={testMode}
+          onChange={(e) => setTestMode(e.target.checked)}
+          disabled={running}
+        />
+        <span>
+          Test mode — target throwaway projects (same metrics), deletable after
+        </span>
+      </label>
+
+      {testMode && (
+        <div className="space-y-2 rounded-md border border-dashed border-zinc-300 dark:border-zinc-700 p-2">
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block">
+              <span className="text-[11px] text-zinc-500">LLM test project</span>
+              <input
+                value={llmProject}
+                onChange={(e) => setLlmProject(e.target.value)}
+                disabled={running}
+                className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] text-zinc-500">Luna test project</span>
+              <input
+                value={lunaProject}
+                onChange={(e) => setLunaProject(e.target.value)}
+                disabled={running}
+                className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+              />
+            </label>
+          </div>
+          <p className="text-[11px] text-zinc-500">
+            Created on first run (metrics enabled automatically). No existing
+            data → backfills ~14 days so there’s a curve to see.
+          </p>
+          <button
+            onClick={deleteTestProjects}
+            disabled={deleting || running}
+            className="w-full rounded-md border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/30 text-xs font-medium px-3 py-1.5 disabled:opacity-40"
+          >
+            {deleting ? "Deleting…" : "Delete these test projects"}
+          </button>
+          {deleteMsg && (
+            <div className="text-[11px] text-zinc-600 dark:text-zinc-400 break-words">
+              {deleteMsg}
+            </div>
+          )}
+        </div>
+      )}
+      <p className="text-[11px] text-amber-600 dark:text-amber-400">
+        ⚠ While running (a few minutes), the org-wide <code>gpt-5-nano</code>{" "}
+        price is temporarily changed. Any live traffic scored on that model in
+        this window freezes at the demo price. It’s reset automatically at the
+        end.
+      </p>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block">
+          <span className="text-[11px] text-zinc-500">Start (optional)</span>
+          <input
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            disabled={running}
+            className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+            placeholder="auto"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-zinc-500">End (optional)</span>
+          <input
+            value={end}
+            onChange={(e) => setEnd(e.target.value)}
+            disabled={running}
+            className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+            placeholder="auto (now)"
+          />
+        </label>
+      </div>
+      <p className="text-[11px] text-zinc-500">
+        Blank = continue from the last non-$0 day → now, ~20 traces/day.
+      </p>
+
+      <button
+        onClick={run}
+        disabled={running}
+        className="w-full rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 transition-colors disabled:opacity-40"
+      >
+        {running ? "Running…" : "Extend cost graph"}
+      </button>
+
+      <button
+        onClick={fix}
+        disabled={running}
+        className="w-full rounded-md border border-indigo-300 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 text-sm font-medium px-3 py-2 transition-colors disabled:opacity-40"
+      >
+        {running ? "Running…" : "Fix scoring gaps"}
+      </button>
+      <p className="text-[11px] text-zinc-500">
+        Scans both projects and heals whichever dipped (from evaluator system
+        errors): re-injects the broken window at its correct price — LLM_Evals @
+        $1,830 and/or Luna_Evals @ $80 — then resets. Auto-detects the window,
+        or use Start/End above. Healthy projects are skipped.
+      </p>
+
+      {status && status.state !== "idle" && (
+        <div
+          className={`rounded-md border p-2.5 text-xs space-y-1.5 ${
+            status.state === "error"
+              ? "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30"
+              : status.state === "done"
+              ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30"
+              : "border-zinc-200 dark:border-zinc-800"
+          }`}
+        >
+          <div className="flex items-center gap-2 font-semibold">
+            {status.state === "running" && (
+              <span className="text-amber-600 dark:text-amber-400">
+                ● {status.phase ? `Phase: ${status.phase}` : "Running…"}
+              </span>
+            )}
+            {status.state === "done" && (
+              <span className="text-emerald-700 dark:text-emerald-300">
+                ✓ Cost graph extended
+              </span>
+            )}
+            {status.state === "error" && (
+              <span className="text-red-700 dark:text-red-300">✗ Failed</span>
+            )}
+          </div>
+
+          {win && (
+            <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
+              {win.traces} traces · {win.days}d · {win.start.slice(0, 10)} →{" "}
+              {win.end.slice(0, 10)}
+            </div>
+          )}
+
+          {(status.steps ?? []).map((s, i) => (
+            <div key={i} className="flex items-start gap-1.5">
+              <StepIcon status={s.status} />
+              <div className="flex-1 min-w-0">
+                <div className="text-zinc-700 dark:text-zinc-300">{s.label}</div>
+                {s.detail && (
+                  <div className="text-[11px] text-zinc-500 break-words">
+                    {s.detail}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {status.error && (
+            <div className="text-red-700 dark:text-red-300 break-words">
+              {status.error}
+            </div>
+          )}
+
+          {status.summary && status.state === "done" && (
+            <pre className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400 whitespace-pre-wrap break-words font-mono">
+              {JSON.stringify(status.summary, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepIcon({ status }: { status: string }) {
+  const ok = status === "ok";
+  const err = status === "error";
+  const icon = ok ? "✓" : err ? "✗" : "●";
+  const color = ok
+    ? "text-emerald-600 dark:text-emerald-400"
+    : err
+    ? "text-red-600 dark:text-red-400"
+    : "text-amber-600 dark:text-amber-400 animate-pulse";
+  return <span className={`mt-0.5 ${color}`}>{icon}</span>;
 }
 
 function StepLine({

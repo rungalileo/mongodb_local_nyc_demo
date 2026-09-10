@@ -67,6 +67,97 @@ export async function createPromoDemo(
   return (await r.json()) as PromoDemoResult;
 }
 
+// ---- Integration cost demo (LLM_Evals vs Luna_Evals) ----------------------
+
+export type CostDemoRequest = {
+  start?: string;
+  end?: string;
+  tz_name?: string;
+  seed?: number;
+  // Leave blank to target the real LLM_Evals / Luna_Evals. Set to throwaway
+  // names to test against disposable projects.
+  llm_project?: string;
+  luna_project?: string;
+  llm_price?: number;
+  luna_price?: number;
+};
+
+export type CostDemoStep = {
+  label: string;
+  status: string;
+  detail?: string;
+};
+
+export type CostDemoStatus = {
+  state: "idle" | "running" | "done" | "error";
+  phase?: string | null;
+  started_at?: string;
+  finished_at?: string | null;
+  error?: string | null;
+  window?: {
+    start: string;
+    end: string;
+    days: number;
+    traces: number;
+  } | null;
+  steps?: CostDemoStep[];
+  summary?: Record<string, unknown> | null;
+};
+
+export async function startCostDemo(
+  body: CostDemoRequest = {},
+): Promise<{ started: boolean; reason?: string; targets?: string[] }> {
+  const r = await fetch(`${BASE}/api/ops/cost_demo`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as {
+    started: boolean;
+    reason?: string;
+    targets?: string[];
+  };
+}
+
+export async function fixCostDemo(
+  body: {
+    llm_project?: string;
+    luna_project?: string;
+    start?: string;
+    end?: string;
+  } = {},
+): Promise<{ started: boolean; reason?: string; targets?: string[] }> {
+  const r = await fetch(`${BASE}/api/ops/cost_demo/fix`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as {
+    started: boolean;
+    reason?: string;
+    targets?: string[];
+  };
+}
+
+export async function deleteCostDemoProjects(
+  names: string[],
+): Promise<{ results?: Record<string, { status: string }>; error?: string }> {
+  const r = await fetch(`${BASE}/api/ops/cost_demo/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ names }),
+  });
+  return (await r.json()) as {
+    results?: Record<string, { status: string }>;
+    error?: string;
+  };
+}
+
+export async function getCostDemoStatus(): Promise<CostDemoStatus> {
+  const r = await fetch(`${BASE}/api/ops/cost_demo/status`);
+  return (await r.json()) as CostDemoStatus;
+}
+
 export async function getUsers(): Promise<User[]> {
   const r = await fetch(`${BASE}/api/users`);
   const j = await r.json();

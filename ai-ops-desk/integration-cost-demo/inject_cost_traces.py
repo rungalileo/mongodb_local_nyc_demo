@@ -393,7 +393,36 @@ def inject_cost_traces(
 
     from galileo.logger.logger import GalileoLogger
 
-    logger = GalileoLogger(project=project, log_stream=log_stream)
+    # Bind the logger to the *ids* of the names we were given. Critical when the
+    # host process has GALILEO_PROJECT_ID / GALILEO_LOG_STREAM_ID set (the app's
+    # live-target repointing does this): GalileoLogger resolves
+    # ``project_id = project_id_arg or GALILEO_PROJECT_ID`` and, when an id is
+    # present, SKIPS name resolution — so passing only ``project=<name>`` would
+    # be silently ignored and every trace would land in the app's active project
+    # (e.g. volt-assistant) instead of the one requested here. Resolving +
+    # passing ids makes the target explicit and immune to those env vars.
+    project_id = log_stream_id = None
+    try:
+        from galileo.projects import Projects
+        from galileo.log_streams import LogStreams
+
+        _proj = Projects().get(name=project)
+        if _proj is not None:
+            project_id = str(_proj.id)
+            _ls = LogStreams().get(name=log_stream, project_id=project_id)
+            if _ls is not None:
+                log_stream_id = str(_ls.id)
+    except Exception:
+        # Best-effort: fall back to name-based binding (correct whenever the env
+        # ids aren't set, e.g. plain CLI usage).
+        project_id = log_stream_id = None
+
+    logger = GalileoLogger(
+        project=project,
+        log_stream=log_stream,
+        project_id=project_id,
+        log_stream_id=log_stream_id,
+    )
     print(f"\nInjecting {len(stamps)} subject traces into project={project!r} "
           f"log_stream={log_stream!r}…")
 
