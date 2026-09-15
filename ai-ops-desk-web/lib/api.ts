@@ -119,6 +119,7 @@ export type LiveTargetTest = {
     enabled_controls?: number;
     reason?: string;
     error?: string;
+    http?: number;
   };
   cleanup?: string;
 };
