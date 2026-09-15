@@ -119,6 +119,12 @@ class CostDemoDeleteRequest(BaseModel):
     names: List[str]
 
 
+class LiveTargetRequest(BaseModel):
+    """Repoint live logging at an existing project/log stream by name."""
+    project_name: str
+    log_stream_name: str = "Default"
+
+
 class CostDemoFixRequest(BaseModel):
     """Heal scoring gaps (e.g. a $0 day from an evaluator system error). Scans
     BOTH projects and re-injects whichever dipped at its correct frozen price
@@ -237,6 +243,53 @@ async def cost_demo_status_endpoint():
     from app.cost_demo_provision import get_cost_demo_status
 
     return get_cost_demo_status()
+
+
+@app.get("/api/ops/live_target")
+async def get_live_target_endpoint():
+    """Report the project/log stream live traces currently log to, and whether
+    it still exists (so a deleted-project pin is visible)."""
+    from app.promo_demo_provision import get_live_target
+
+    return get_live_target()
+
+
+@app.post("/api/ops/live_target")
+async def set_live_target_endpoint(req: LiveTargetRequest):
+    """Repoint live logging at an existing project/log stream by name. Recovers
+    a deploy stranded on a deleted target without a restart."""
+    from app.promo_demo_provision import set_live_target
+
+    try:
+        return await asyncio.to_thread(
+            set_live_target, req.project_name, req.log_stream_name
+        )
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ops/live_target/test")
+async def test_live_target_endpoint():
+    """Write a marker trace to the current live target, confirm it lands in the
+    right stream, probe Agent Control, then delete the marker trace."""
+    from app.promo_demo_provision import test_live_target
+
+    try:
+        return await asyncio.to_thread(test_live_target)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ops/live_target/reset")
+async def reset_live_target_endpoint():
+    """Revert live logging to the deploy's default project/log stream and clear
+    the persisted pin."""
+    from app.promo_demo_provision import reset_live_target_to_default
+
+    try:
+        return await asyncio.to_thread(reset_live_target_to_default)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
 @app.post("/api/ops/cost_demo/fix")

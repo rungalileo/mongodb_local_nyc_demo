@@ -36,6 +36,14 @@ from typing import Any, Dict, List, Optional
 # so this bounds how long the button's request runs and how much it writes.
 MAX_SESSIONS = int(os.getenv("PROMO_DEMO_MAX_SESSIONS", "500"))
 
+# Captured at import — this module is imported in api.py AFTER load_dotenv but
+# BEFORE restore_active_target() runs, so these hold the deploy's *default*
+# project/log stream (from .env or the platform env), even after a later
+# apply_live_target overwrites the live GALILEO_PROJECT env. Used to revert the
+# live target back to the default at runtime.
+_ENV_DEFAULT_PROJECT = os.environ.get("GALILEO_PROJECT")
+_ENV_DEFAULT_LOG_STREAM = os.environ.get("GALILEO_LOG_STREAM") or "Default"
+
 # ---- LLM-as-judge metric --------------------------------------------------
 
 PROMO_METRIC_NAME = os.getenv("PROMO_METRIC_NAME", "Expired Promo Applied")
@@ -390,29 +398,34 @@ def _target_exists(project_id: Optional[str], log_stream_id: Optional[str]) -> s
     """
     if not project_id or not log_stream_id:
         return "unknown"  # nothing pinned to verify by id
-    if not (os.environ.get("GALILEO_API_KEY") and os.environ.get("GALILEO_API_URL")):
-        return "unknown"  # SDK not configured to check
+    api = os.environ.get("GALILEO_API_URL")
+    key = os.environ.get("GALILEO_API_KEY")
+    if not api or not key:
+        return "unknown"  # not configured to check
+    # Use raw REST rather than the SDK: Projects().get(id=...) raises in this
+    # SDK build (an enum it can't deserialize), which would make every check
+    # "unknown" and silently disable the self-heal. A plain GET is immune.
     try:
-        from galileo.projects import Projects
-        from galileo.log_streams import LogStreams
+        import httpx
 
-        try:
-            from galileo.exceptions import NotFoundError
-        except Exception:  # pragma: no cover - defensive import
-            NotFoundError = ()  # type: ignore[assignment]
-
-        try:
-            if Projects().get(id=str(project_id)) is None:
+        with httpx.Client(
+            base_url=api.rstrip("/"),
+            headers={"Galileo-API-Key": key},
+            timeout=20.0,
+        ) as c:
+            pr = c.get(f"/projects/{project_id}")
+            if pr.status_code == 404:
                 return "missing"
-            if LogStreams().get(id=str(log_stream_id), project_id=str(project_id)) is None:
+            if pr.status_code >= 400:
+                return "unknown"
+            ls = c.get(f"/projects/{project_id}/log_streams/{log_stream_id}")
+            if ls.status_code == 404:
                 return "missing"
+            if ls.status_code >= 400:
+                return "unknown"
             return "ok"
-        except NotFoundError:
-            # A deleted project/stream 404s here — that's the case we heal.
-            return "missing"
     except Exception:
-        # No creds, network blip, or a non-404 error (e.g. malformed id):
-        # don't wipe a target we couldn't actually disprove.
+        # Network blip / unexpected error: don't wipe a target we can't disprove.
         return "unknown"
 
 
@@ -558,6 +571,236 @@ def apply_live_target(
     else:
         result["persisted"] = True
 
+    return result
+
+
+def get_live_target() -> Dict[str, Any]:
+    """Report the live target the running process is currently pointed at, and
+    whether it still exists in Galileo. Powers the Ops "Live target" readout."""
+    project_id = os.environ.get("GALILEO_PROJECT_ID")
+    log_stream_id = os.environ.get("GALILEO_LOG_STREAM_ID")
+    return {
+        "project": os.environ.get("GALILEO_PROJECT"),
+        "log_stream": os.environ.get("GALILEO_LOG_STREAM"),
+        "project_id": project_id,
+        "log_stream_id": log_stream_id,
+        # "ok" | "missing" | "unknown" (unknown = name-only pin / uncheckable)
+        "exists": _target_exists(project_id, log_stream_id),
+        "default_project": _ENV_DEFAULT_PROJECT,
+        "default_log_stream": _ENV_DEFAULT_LOG_STREAM,
+    }
+
+
+def set_live_target(project_name: str, log_stream_name: str = "Default") -> Dict[str, Any]:
+    """Repoint live logging at an EXISTING project/log stream by name.
+
+    Resolves the ids first and refuses if the project or stream doesn't exist,
+    so this can recover a deploy stranded on a deleted target (type the correct
+    project name) without a restart. Does NOT create anything.
+    """
+    from galileo.projects import Projects
+    from galileo.log_streams import LogStreams
+
+    project_name = (project_name or "").strip()
+    log_stream_name = (log_stream_name or "Default").strip()
+    if not project_name:
+        return {"ok": False, "error": "project_name is required"}
+
+    try:
+        proj = Projects().get(name=project_name)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    if proj is None:
+        return {"ok": False, "error": f"project {project_name!r} not found"}
+    project_id = str(proj.id)
+
+    try:
+        ls = LogStreams().get(name=log_stream_name, project_id=project_id)
+    except Exception:  # noqa: BLE001
+        ls = None
+    if ls is None:
+        return {
+            "ok": False,
+            "error": f"log stream {log_stream_name!r} not found in {project_name!r}",
+        }
+    log_stream_id = str(ls.id)
+
+    applied = apply_live_target(
+        project_name,
+        log_stream_name,
+        project_id=project_id,
+        log_stream_id=log_stream_id,
+    )
+    return {
+        "ok": True,
+        "project": project_name,
+        "log_stream": log_stream_name,
+        "project_id": project_id,
+        "log_stream_id": log_stream_id,
+        "applied": applied,
+    }
+
+
+def reset_live_target_to_default() -> Dict[str, Any]:
+    """Revert live logging to the deploy's default project/log stream and clear
+    the persisted pin, so it also sticks across restarts."""
+    clear_active_target()
+    project = (_ENV_DEFAULT_PROJECT or "").strip()
+    log_stream = (_ENV_DEFAULT_LOG_STREAM or "Default").strip()
+    if not project:
+        return {"ok": False, "error": "no default GALILEO_PROJECT configured"}
+    result = set_live_target(project, log_stream)
+    result["reverted_to_default"] = True
+    return result
+
+
+def _control_health(log_stream_id: str) -> Dict[str, Any]:
+    """Check Agent Control reachability + how many controls are bound (and
+    enabled) on this log stream. A lightweight 'is the control wired?' probe."""
+    server = os.environ.get("AGENT_CONTROL_URL")
+    key = os.environ.get("AGENT_CONTROL_API_KEY") or os.environ.get("GALILEO_API_KEY")
+    header = os.environ.get("AGENT_CONTROL_API_KEY_HEADER", "Galileo-API-Key")
+    if not server or not key:
+        return {"status": "skipped", "reason": "AGENT_CONTROL_URL / key not set"}
+    try:
+        import httpx
+
+        with httpx.Client(base_url=server.rstrip("/"), headers={header: key}, timeout=20.0) as c:
+            v = c.get(
+                "/api/v1/control-bindings",
+                params={"target_type": "log_stream", "target_id": log_stream_id, "limit": 100},
+            )
+            if v.status_code >= 400:
+                return {"status": "error", "http": v.status_code, "reachable": True}
+            binds = v.json().get("bindings") or []
+            return {
+                "status": "ok",
+                "reachable": True,
+                "bound_controls": len(binds),
+                "enabled_controls": sum(1 for b in binds if b.get("enabled")),
+            }
+    except Exception as e:  # noqa: BLE001
+        return {"status": "error", "reachable": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def test_live_target(cleanup: bool = True) -> Dict[str, Any]:
+    """Write a throwaway trace to the CURRENT live target, confirm it lands in
+    the right stream, probe Agent Control, then delete the test trace.
+
+    Only ever deletes its OWN test trace (matched by a unique marker id), so it
+    never touches real data.
+    """
+    import json as _json
+    import time
+    import uuid
+    from datetime import datetime, timezone as _dt_timezone
+
+    project = (os.environ.get("GALILEO_PROJECT") or "").strip()
+    log_stream = (os.environ.get("GALILEO_LOG_STREAM") or "Default").strip()
+    result: Dict[str, Any] = {"project": project, "log_stream": log_stream}
+    if not project:
+        return {"ok": False, "error": "no live target is set"}
+
+    # Resolve ids by NAME (Projects().get(id=...) is broken in this SDK build).
+    from galileo.projects import Projects
+    from galileo.log_streams import LogStreams
+
+    try:
+        proj = Projects().get(name=project)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"resolve project: {type(e).__name__}: {e}", **result}
+    if proj is None:
+        return {"ok": False, "error": f"project {project!r} not found — repoint first", **result}
+    project_id = str(proj.id)
+    try:
+        ls = LogStreams().get(name=log_stream, project_id=project_id)
+    except Exception:  # noqa: BLE001
+        ls = None
+    if ls is None:
+        return {"ok": False, "error": f"log stream {log_stream!r} not found in {project!r}", **result}
+    log_stream_id = str(ls.id)
+    result["project_id"] = project_id
+    result["log_stream_id"] = log_stream_id
+
+    test_id = uuid.uuid4().hex
+    marker = f"__live_target_test__ {test_id}"
+    start_iso = datetime.now(_dt_timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1) Write a test trace bound explicitly to these ids.
+    try:
+        from galileo.logger.logger import GalileoLogger
+
+        logger = GalileoLogger(
+            project=project, log_stream=log_stream,
+            project_id=project_id, log_stream_id=log_stream_id,
+        )
+        logger.start_trace(input=marker, name=marker, metadata={"live_target_test": test_id})
+        logger.add_llm_span(
+            input=marker, output="ok", model="live-target-test", name="live-target-test",
+            num_input_tokens=1, num_output_tokens=1, total_tokens=2,
+        )
+        logger.conclude(output="ok", conclude_all=True)
+        logger.flush()
+        result["write"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"write failed: {type(e).__name__}: {e}", **result}
+
+    # 2) Poll search until the test trace lands (proves the RIGHT stream).
+    api = os.environ.get("GALILEO_API_URL").rstrip("/")
+    hdr = {"Galileo-API-Key": os.environ.get("GALILEO_API_KEY")}
+    found_ids: List[str] = []
+    import httpx
+
+    with httpx.Client(base_url=api, timeout=40.0) as c:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                r = c.post(
+                    f"/projects/{project_id}/traces/search",
+                    headers=hdr,
+                    json={
+                        "log_stream_id": log_stream_id,
+                        "limit": 100,
+                        "filters": [
+                            {"column_id": "created_at", "operator": "gte", "value": start_iso, "type": "date"}
+                        ],
+                    },
+                )
+                if r.status_code == 200:
+                    for t in r.json().get("records") or []:
+                        if test_id in _json.dumps(t):
+                            if t.get("id"):
+                                found_ids.append(t["id"])
+                    if found_ids:
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(3)
+    result["logging_ok"] = bool(found_ids)
+
+    # 3) Agent Control probe.
+    result["control"] = _control_health(log_stream_id)
+
+    # 4) Cleanup: delete only our own test trace(s), by id.
+    if cleanup and found_ids:
+        try:
+            with httpx.Client(base_url=api, timeout=40.0) as c:
+                dr = c.post(
+                    f"/projects/{project_id}/traces/delete",
+                    headers=hdr,
+                    json={
+                        "log_stream_id": log_stream_id,
+                        "filters": [{"column_id": "id", "operator": "one_of", "value": found_ids, "type": "id"}],
+                    },
+                )
+                result["cleanup"] = "ok" if dr.status_code in (200, 204) else f"http {dr.status_code}"
+        except Exception as e:  # noqa: BLE001
+            result["cleanup"] = f"error: {type(e).__name__}: {e}"
+    elif cleanup:
+        result["cleanup"] = "skipped (trace not confirmed in time)"
+
+    result["ok"] = bool(found_ids)
+    result["test_id"] = test_id
     return result
 
 

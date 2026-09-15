@@ -67,6 +67,78 @@ export async function createPromoDemo(
   return (await r.json()) as PromoDemoResult;
 }
 
+// ---- Live target (which project live traces log to) -----------------------
+
+export type LiveTarget = {
+  project?: string | null;
+  log_stream?: string | null;
+  project_id?: string | null;
+  log_stream_id?: string | null;
+  exists?: "ok" | "missing" | "unknown";
+  default_project?: string | null;
+  default_log_stream?: string | null;
+};
+
+export type LiveTargetResult = {
+  ok: boolean;
+  error?: string;
+  project?: string;
+  log_stream?: string;
+  project_id?: string;
+  log_stream_id?: string;
+  reverted_to_default?: boolean;
+};
+
+export async function getLiveTarget(): Promise<LiveTarget> {
+  const r = await fetch(`${BASE}/api/ops/live_target`);
+  return (await r.json()) as LiveTarget;
+}
+
+export async function setLiveTarget(
+  project_name: string,
+  log_stream_name = "Default",
+): Promise<LiveTargetResult> {
+  const r = await fetch(`${BASE}/api/ops/live_target`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_name, log_stream_name }),
+  });
+  return (await r.json()) as LiveTargetResult;
+}
+
+export type LiveTargetTest = {
+  ok: boolean;
+  error?: string;
+  project?: string;
+  log_stream?: string;
+  logging_ok?: boolean;
+  control?: {
+    status: string;
+    reachable?: boolean;
+    bound_controls?: number;
+    enabled_controls?: number;
+    reason?: string;
+    error?: string;
+  };
+  cleanup?: string;
+};
+
+export async function testLiveTarget(): Promise<LiveTargetTest> {
+  const r = await fetch(`${BASE}/api/ops/live_target/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return (await r.json()) as LiveTargetTest;
+}
+
+export async function resetLiveTarget(): Promise<LiveTargetResult> {
+  const r = await fetch(`${BASE}/api/ops/live_target/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  return (await r.json()) as LiveTargetResult;
+}
+
 // ---- Integration cost demo (LLM_Evals vs Luna_Evals) ----------------------
 
 export type CostDemoRequest = {

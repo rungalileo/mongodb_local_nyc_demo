@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import {
   ChatResult,
   CostDemoStatus,
+  LiveTarget,
+  LiveTargetTest,
   PromoDemoResult,
   Scenario,
   User,
@@ -11,9 +13,13 @@ import {
   deleteCostDemoProjects,
   fixCostDemo,
   getCostDemoStatus,
+  getLiveTarget,
   getScenarios,
   getUsers,
+  resetLiveTarget,
+  setLiveTarget,
   startCostDemo,
+  testLiveTarget,
 } from "@/lib/api";
 import { Identity, identityFor } from "@/lib/identity";
 import { AgentRow, AgentStatus } from "./ChatWidget";
@@ -120,6 +126,10 @@ export function OpsDrawer({
 
           <Section title="Generate demo traffic">
             <PromoDemoPanel />
+          </Section>
+
+          <Section title="Live target">
+            <LiveTargetPanel />
           </Section>
 
           <Section title="Integration cost demo">
@@ -390,6 +400,194 @@ function PromoDemoPanel() {
               ✗ {result.error || "Provisioning failed"}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LiveTargetPanel() {
+  const [target, setTarget] = useState<LiveTarget | null>(null);
+  const [project, setProject] = useState("");
+  const [logStream, setLogStream] = useState("Default");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<LiveTargetTest | null>(null);
+
+  const refresh = () =>
+    getLiveTarget()
+      .then((t) => {
+        setTarget(t);
+        if (t.project && !project) setProject(t.project);
+        if (t.log_stream) setLogStream(t.log_stream);
+      })
+      .catch(() => {});
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const point = async () => {
+    if (busy || !project.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await setLiveTarget(project.trim(), logStream.trim() || "Default");
+      setMsg(r.ok ? `✓ Now logging to ${r.project} / ${r.log_stream}` : `✗ ${r.error}`);
+      await refresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revert = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await resetLiveTarget();
+      setMsg(r.ok ? `✓ Reverted to default: ${r.project} / ${r.log_stream}` : `✗ ${r.error}`);
+      await refresh();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runTest = async () => {
+    if (busy || testing) return;
+    setTesting(true);
+    setTest(null);
+    setMsg(null);
+    try {
+      const r = await testLiveTarget();
+      setTest(r);
+    } catch (e) {
+      setTest({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const exists = target?.exists;
+  const badge =
+    exists === "missing"
+      ? { text: "deleted / missing", cls: "text-red-600 dark:text-red-400" }
+      : exists === "ok"
+      ? { text: "exists", cls: "text-emerald-600 dark:text-emerald-400" }
+      : { text: "unverified", cls: "text-zinc-500" };
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-xs text-zinc-500">
+        Where live/manual chat traces are logged right now. Repoint it to an
+        existing project by name, or revert to the deploy default.
+      </p>
+
+      <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-2 text-xs space-y-0.5">
+        <div className="flex items-center gap-2">
+          <span className="text-zinc-500">Current:</span>
+          <span className="font-mono">
+            {target?.project ?? "?"} / {target?.log_stream ?? "?"}
+          </span>
+          <span className={`ml-auto ${badge.cls}`}>{badge.text}</span>
+        </div>
+        <div className="text-[11px] text-zinc-500">
+          Default: <span className="font-mono">{target?.default_project ?? "?"}</span>
+        </div>
+        {exists === "missing" && (
+          <div className="text-[11px] text-red-600 dark:text-red-400">
+            ⚠ Pinned project no longer exists — traces are being dropped. Repoint
+            or revert below.
+          </div>
+        )}
+      </div>
+
+      <label className="block">
+        <span className="text-[11px] text-zinc-500">Project name</span>
+        <input
+          value={project}
+          onChange={(e) => setProject(e.target.value)}
+          disabled={busy}
+          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+          placeholder="project to point live traces at"
+        />
+      </label>
+      <label className="block">
+        <span className="text-[11px] text-zinc-500">Log stream name</span>
+        <input
+          value={logStream}
+          onChange={(e) => setLogStream(e.target.value)}
+          disabled={busy}
+          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+          placeholder="Default"
+        />
+      </label>
+
+      <div className="flex gap-2">
+        <button
+          onClick={point}
+          disabled={busy || !project.trim()}
+          className="flex-1 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 transition-colors disabled:opacity-40"
+        >
+          {busy ? "…" : "Point live traces here"}
+        </button>
+        <button
+          onClick={revert}
+          disabled={busy}
+          className="rounded-md border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm px-3 py-2 disabled:opacity-40"
+          title="Revert to the deploy's default project"
+        >
+          Revert to default
+        </button>
+      </div>
+
+      <button
+        onClick={runTest}
+        disabled={busy || testing}
+        className="w-full rounded-md border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-sm px-3 py-2 disabled:opacity-40"
+        title="Write a marker trace, confirm it lands in this stream, probe Agent Control, then delete it"
+      >
+        {testing ? "Testing…" : "Run test (write · verify · cleanup)"}
+      </button>
+
+      {test && (
+        <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-2 text-[11px] space-y-0.5">
+          {test.error && (
+            <div className="text-red-600 dark:text-red-400">✗ {test.error}</div>
+          )}
+          {test.logging_ok !== undefined && (
+            <div className={test.logging_ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}>
+              {test.logging_ok ? "✓" : "✗"} Logging to{" "}
+              <span className="font-mono">
+                {test.project} / {test.log_stream}
+              </span>
+            </div>
+          )}
+          {test.control && (
+            <div className="text-zinc-600 dark:text-zinc-400">
+              Agent Control:{" "}
+              {test.control.status === "ok"
+                ? `reachable · ${test.control.bound_controls ?? 0} bound (${test.control.enabled_controls ?? 0} enabled)`
+                : test.control.status === "skipped"
+                ? `skipped — ${test.control.reason}`
+                : `error — ${test.control.error ?? test.control.http}`}
+            </div>
+          )}
+          {test.cleanup && (
+            <div className="text-zinc-500">Cleanup: {test.cleanup}</div>
+          )}
+        </div>
+      )}
+
+      {msg && (
+        <div className="text-[11px] text-zinc-600 dark:text-zinc-400 break-words">
+          {msg}
         </div>
       )}
     </div>
