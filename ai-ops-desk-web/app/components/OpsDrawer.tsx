@@ -274,21 +274,43 @@ export function OpsDrawer({
 }
 
 function PromoDemoPanel() {
+  const [mode, setMode] = useState<"create" | "current">("create");
   const [projectName, setProjectName] = useState("discount-demo");
   const [logStreamName, setLogStreamName] = useState("Default");
+  const [live, setLive] = useState<LiveTarget | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PromoDemoResult | null>(null);
 
+  // Current live target — the destination for the "inject into current" mode.
+  const refreshLive = () => getLiveTarget().then(setLive).catch(() => {});
+  useEffect(() => {
+    refreshLive();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const useCurrent = mode === "current";
+  const curProject = (live?.project ?? "").trim();
+  const curLogStream = (live?.log_stream ?? "Default").trim();
+  const targetProject = useCurrent ? curProject : projectName.trim();
+  const targetLogStream = useCurrent
+    ? curLogStream || "Default"
+    : logStreamName.trim() || "Default";
+
   const submit = async () => {
-    if (!projectName.trim() || busy) return;
+    if (!targetProject || busy) return;
     setBusy(true);
     setResult(null);
     try {
       const r = await createPromoDemo({
-        project_name: projectName.trim(),
-        log_stream_name: logStreamName.trim() || "Default",
+        project_name: targetProject,
+        log_stream_name: targetLogStream,
+        // "current" mode injects into wherever the app already points and must
+        // NOT repoint the live target — that's what was clashing with the
+        // Live Target panel. "create" mode keeps the old behavior (repoint).
+        set_active: !useCurrent,
       });
       setResult(r);
+      if (useCurrent) refreshLive();
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -303,43 +325,107 @@ function PromoDemoPanel() {
 
   return (
     <div className="space-y-2.5">
-      <p className="text-xs text-zinc-500">
-        Creates the Galileo project + log stream, enables the demo evals
-        (expired-promo, customer-sentiment + presets), attaches the
-        <code className="mx-1">promo-proposal-steer</code> control (disabled),
-        then injects promo conversations — expired-promo mistakes mixed with
-        correct live-promo runs, spread across the last few weeks with realistic
-        webstore seasonality (busier evenings/weekends).
-      </p>
-
-      <label className="block">
-        <span className="text-[11px] text-zinc-500">Project name</span>
-        <input
-          value={projectName}
-          onChange={(e) => setProjectName(e.target.value)}
+      {/* Mode toggle: create a fresh project vs. inject into current target */}
+      <div className="flex rounded-md border border-zinc-300 dark:border-zinc-700 overflow-hidden text-xs">
+        <button
+          onClick={() => setMode("create")}
           disabled={busy}
-          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
-          placeholder="discount-demo"
-        />
-      </label>
-
-      <label className="block">
-        <span className="text-[11px] text-zinc-500">Log stream name</span>
-        <input
-          value={logStreamName}
-          onChange={(e) => setLogStreamName(e.target.value)}
+          className={`flex-1 px-2 py-1.5 transition-colors ${
+            mode === "create"
+              ? "bg-indigo-600 text-white"
+              : "bg-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          }`}
+        >
+          Create new project
+        </button>
+        <button
+          onClick={() => setMode("current")}
           disabled={busy}
-          className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
-          placeholder="Default"
-        />
-      </label>
+          className={`flex-1 px-2 py-1.5 transition-colors ${
+            mode === "current"
+              ? "bg-indigo-600 text-white"
+              : "bg-transparent hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          }`}
+        >
+          Inject into current
+        </button>
+      </div>
+
+      {useCurrent ? (
+        <>
+          <p className="text-xs text-zinc-500">
+            Injects the same promo traffic into the project the app is{" "}
+            <b>currently pointing at</b> — without creating a new project or
+            changing the live target. Evals + steer control are ensured
+            (idempotent) so the traffic is scored.
+          </p>
+          <div className="rounded-md border border-zinc-200 dark:border-zinc-800 p-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="text-zinc-500">Target:</span>
+              <span className="font-mono">
+                {curProject || "?"} / {curLogStream || "?"}
+              </span>
+              <button
+                onClick={refreshLive}
+                disabled={busy}
+                className="ml-auto text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-40"
+              >
+                refresh
+              </button>
+            </div>
+            {!curProject && (
+              <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                No live target resolved yet — set one in Live Target above.
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-zinc-500">
+            Creates the Galileo project + log stream, enables the demo evals
+            (expired-promo, customer-sentiment + presets), attaches the
+            <code className="mx-1">promo-proposal-steer</code> control
+            (disabled), then injects promo conversations — expired-promo
+            mistakes mixed with correct live-promo runs, spread across the last
+            few weeks with realistic webstore seasonality. Also repoints live
+            chat here.
+          </p>
+
+          <label className="block">
+            <span className="text-[11px] text-zinc-500">Project name</span>
+            <input
+              value={projectName}
+              onChange={(e) => setProjectName(e.target.value)}
+              disabled={busy}
+              className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+              placeholder="discount-demo"
+            />
+          </label>
+
+          <label className="block">
+            <span className="text-[11px] text-zinc-500">Log stream name</span>
+            <input
+              value={logStreamName}
+              onChange={(e) => setLogStreamName(e.target.value)}
+              disabled={busy}
+              className="mt-0.5 w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1.5 text-sm disabled:opacity-50"
+              placeholder="Default"
+            />
+          </label>
+        </>
+      )}
 
       <button
         onClick={submit}
-        disabled={busy || !projectName.trim()}
+        disabled={busy || !targetProject}
         className="w-full rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 transition-colors disabled:opacity-40"
       >
-        {busy ? "Injecting…" : "Create project + inject traffic"}
+        {busy
+          ? "Injecting…"
+          : useCurrent
+          ? `Inject into ${curProject || "current target"}`
+          : "Create project + inject traffic"}
       </button>
 
       {result && (
