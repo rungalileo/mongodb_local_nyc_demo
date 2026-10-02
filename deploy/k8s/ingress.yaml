@@ -1,0 +1,79 @@
+# Single hostname for both tiers: /api/* to the backend, everything else to the
+# Next.js frontend. This is what lets the browser bundle use relative URLs (so
+# the published image isn't pinned to a hostname), removes CORS entirely, and
+# gives Phase 2 a single place to add password protection.
+#
+# The frontend defines no /api routes of its own, so the prefix split is safe.
+#
+# Targets the Splunk o11y-field-demos k3d EC2 instances, which ship Traefik as
+# the ingress controller and a cert-manager "letsencrypt-prod" ClusterIssuer
+# (see k3d-ec2-instance/README.md in the o11y-field-demos repo). For an
+# ingress-nginx cluster instead, see the note at the bottom of this file.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: voltway
+  namespace: voltway
+  labels:
+    app.kubernetes.io/part-of: voltway-demo
+  annotations:
+    # Issues the TLS cert below via HTTP-01. The ClusterIssuer is created by
+    # cloud-init on first boot of the EC2 instance and must already exist --
+    # if the cluster was recreated with `k3d cluster delete`, reinstall
+    # cert-manager and reapply the issuer first or the cert stays Pending.
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Basic Auth over the whole site (see basicauth-middleware.yaml). The value
+    # is <namespace>-<middleware>@kubernetescrd, so "voltway-" here is the
+    # namespace. Requires the voltway-basicauth Secret to exist, which
+    # deploy/scripts/set-password.sh creates -- without it Traefik returns 500
+    # for every request rather than prompting.
+    traefik.ingress.kubernetes.io/router.middlewares: voltway-basicauth@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - voltway.splunko11y.com
+      secretName: voltway-tls
+  rules:
+    - host: voltway.splunko11y.com
+      http:
+        paths:
+          # Traefik derives router priority from rule length, so the longer
+          # PathPrefix(`/api`) wins over PathPrefix(`/`) regardless of the
+          # order here. No prefix stripping: the backend serves routes under
+          # /api itself.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: voltway-api
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: voltway-web
+                port:
+                  name: http
+#
+# Note on SSE: POST /api/chat/stream is Server-Sent Events -- one event per
+# agent completion. No buffering annotations are needed here, for two measured
+# reasons:
+#
+#   1. Traefik streams by default (buffering is an opt-in middleware). Verified
+#      on k3d/Traefik 3.3.6: 7 events arrived spread over ~9s rather than
+#      together at the end.
+#   2. The application already sets `X-Accel-Buffering: no` on the response
+#      (see app/api.py), which is the standard way to opt a stream out of proxy
+#      buffering, and nginx honours it.
+#
+# So the only thing to avoid is attaching a `buffering` Middleware to this
+# router. For reference, on ingress-nginx the belt-and-braces equivalents are
+# the annotations below -- but testing nginx with `proxy_buffering on` did NOT
+# reproduce buffered SSE for this app, so treat them as defensive rather than
+# required. They are deliberately not in the manifest because Traefik ignores
+# `nginx.*` annotations, which would imply SSE was configured when it wasn't.
+#
+#   nginx.ingress.kubernetes.io/proxy-buffering: "off"
+#   nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"

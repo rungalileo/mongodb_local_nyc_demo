@@ -1,4 +1,11 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Same-origin in production (the Ingress routes /api/* to the backend), explicit
+// localhost for `next dev`. Keeping this relative is what makes the published
+// container image portable — NEXT_PUBLIC_* is inlined into the browser bundle at
+// build time, so a baked hostname would pin the image to one deployment.
+// `??` (not `||`) so an intentionally empty value survives.
+const BASE =
+  process.env.NEXT_PUBLIC_API_URL ??
+  (process.env.NODE_ENV === "production" ? "" : "http://localhost:8000");
 
 export type User = { id: string };
 

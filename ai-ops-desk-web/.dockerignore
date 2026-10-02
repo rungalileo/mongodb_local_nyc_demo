@@ -1,0 +1,20 @@
+# Installed fresh in the deps stage; copying the host tree would break native
+# bindings and bloat the build context.
+node_modules/
+
+# Build output — regenerated in the build stage.
+.next/
+out/
+
+# Never bake env files: NEXT_PUBLIC_* would be inlined into the browser bundle
+# and pin the image to one deployment.
+.env
+.env.*
+
+npm-debug.log*
+.git/
+.gitignore
+.DS_Store
+*.md
+Dockerfile
+.dockerignore

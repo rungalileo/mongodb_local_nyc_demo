@@ -1,0 +1,38 @@
+# app/api.py calls load_dotenv(override=True), so a .env baked into the image
+# would silently override every value injected by Kubernetes Secrets/ConfigMaps.
+# Never ship one.
+.env
+.env.*
+!env.example
+
+# Local virtualenv — huge, and platform-specific so it would break the image.
+.venv/
+venv/
+ENV/
+
+# Runtime state: the live-target pin belongs to a deployment, not an image.
+.galileo_active_target.json
+
+__pycache__/
+*.py[cod]
+*.so
+.mypy_cache/
+.pytest_cache/
+
+# Local-only helper scripts for the integration-cost demo; not part of the app.
+integration-cost-demo/
+
+# Docs and local assets
+*.md
+image.png
+
+# Node leftovers (an npm lockfile lives here but the backend is pure Python)
+node_modules/
+package.json
+package-lock.json
+
+.git/
+.gitignore
+.DS_Store
+Dockerfile
+.dockerignore

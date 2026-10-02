@@ -1,0 +1,29 @@
+# Lets you apply everything in the right order with:
+#   kubectl apply -k deploy/k8s
+#
+# Plain `kubectl apply -f deploy/k8s/` processes files alphabetically, which
+# would try to create the Deployments before the Namespace exists. Kustomize
+# orders by kind (Namespace first), so prefer -k.
+#
+# secret.example.yaml is intentionally NOT listed — create the real Secret
+# separately so credentials never live in git. See DEPLOY-K8S.md. The same goes
+# for the Basic Auth Secret, created by deploy/scripts/set-password.sh.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - web-deployment.yaml
+  - web-service.yaml
+  - basicauth-middleware.yaml
+  - ingress.yaml
+
+# Pin both images to a specific build, e.g.:
+#   images:
+#     - name: ghcr.io/rungalileo/voltway-api
+#       newTag: sha-<commit>
+#     - name: ghcr.io/rungalileo/voltway-web
+#       newTag: sha-<commit>

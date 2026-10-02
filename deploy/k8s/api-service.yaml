@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: voltway-api
+  namespace: voltway
+  labels:
+    app.kubernetes.io/name: voltway-api
+    app.kubernetes.io/part-of: voltway-demo
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: voltway-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

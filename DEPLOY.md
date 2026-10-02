@@ -12,6 +12,11 @@ project**. The demo supports two Agent Control modes via the
 You flip between them by changing one Railway env var (`AGENT_CONTROL_MODE`)
 plus a few related vars. The application code is identical for both.
 
+> **Deploying to Kubernetes instead?** See [DEPLOY-K8S.md](DEPLOY-K8S.md). That
+> path uses published container images (`ghcr.io/rungalileo/voltway-api` and
+> `voltway-web`) and runs Agent Control in `enterprise` mode, so it needs two
+> workloads and no Postgres.
+
 ## Architecture (OSS mode)
 
 ```
