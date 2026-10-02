@@ -163,8 +163,10 @@ The intended host is an EC2 instance provisioned by the `deploy.sh` script in th
 cert-manager with a `letsencrypt-prod` ClusterIssuer, Helm, kubectl, and k9s
 already installed.
 
-> Not yet done — this section is the Phase 3 plan, written down so the manifests
-> can be read in context. Only the containerization (Phase 1) has been verified.
+> No instance has been provisioned yet — this section is the plan, written down so
+> the manifests can be read in context. Everything from `## Deploy` onwards has
+> been verified on a local k3d cluster running the same k3s version and the same
+> ingress controller, including Basic Auth.
 
 **1. Provision.** Run `./deploy.sh` from `k3d-ec2-instance/` and choose:
 
@@ -196,9 +198,11 @@ around is independent of it. Install per
 [travel-planner-demo-v2](https://github.com/splunk/o11y-field-demos/blob/main/travel-planner-demo-v2/README.md),
 which is the closest analog (also an agentic AI demo).
 
-**5. Register the demo.** Add a `voltway-demo/` folder to o11y-field-demos with a
-`README.md` and `TROUBLESHOOTING.md`, plus a row in that repo's root README
-table, pointing back at this repo as the code location.
+**5. Register the demo.** The `voltway-demo/` folder for o11y-field-demos is
+already written and staged in [`deploy/field-demos/`](deploy/field-demos/README.md)
+— a `README.md` and `TROUBLESHOOTING.md` in that repo's house style, plus the row
+to add to its root README table, pointing back at this repo as the code location.
+Copy the folder across rather than writing it from scratch.
 
 ---
 
