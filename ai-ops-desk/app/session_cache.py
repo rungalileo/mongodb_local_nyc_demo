@@ -21,8 +21,9 @@ Caveats:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 from threading import Lock
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 _order_by_session: dict[str, str] = {}
 # "promo in focus" per chat session. Powers the two-turn promo flow: turn 1
@@ -75,3 +76,43 @@ def clear_promo(chat_session_id: Optional[str]) -> None:
         return
     with _lock:
         _promo_by_session.pop(chat_session_id, None)
+
+
+# Galileo session id per chat session. The SDK can resume a session by its
+# external_id, but only via a server-side search that is eventually consistent:
+# a session created a few seconds ago is not yet visible to it. So a reply sent
+# within ~15s of the previous turn — typically the "yes" in the promo flow —
+# misses the session and the SDK silently opens a duplicate. Remembering the id
+# we were handed means only a chat's FIRST turn ever depends on that search.
+#
+# Keyed by (project, log stream, chat id): a session belongs to one log stream,
+# and the live target can be repointed at runtime. Bounded, unlike the caches
+# above, because every chat adds an entry and the backend runs indefinitely.
+_MAX_GALILEO_SESSIONS = 10_000
+_galileo_session_by_chat: "OrderedDict[Tuple[str, str, str], str]" = OrderedDict()
+# Held across creation, so two concurrent turns of one chat cannot both create.
+_galileo_session_lock = Lock()
+
+
+def get_or_create_galileo_session(
+    chat_session_id: str,
+    target: Tuple[str, str],
+    create: Callable[[], Optional[str]],
+) -> Tuple[Optional[str], bool]:
+    """Return ``(session_id, created)`` for this chat on this target.
+
+    ``create`` runs only when no session is remembered yet. A falsy result is
+    not cached, so a failed creation is retried on the next turn.
+    """
+    key = (target[0], target[1], chat_session_id)
+    with _galileo_session_lock:
+        session_id = _galileo_session_by_chat.get(key)
+        if session_id:
+            _galileo_session_by_chat.move_to_end(key)
+            return session_id, False
+        session_id = create()
+        if session_id:
+            _galileo_session_by_chat[key] = session_id
+            while len(_galileo_session_by_chat) > _MAX_GALILEO_SESSIONS:
+                _galileo_session_by_chat.popitem(last=False)
+        return session_id, True
