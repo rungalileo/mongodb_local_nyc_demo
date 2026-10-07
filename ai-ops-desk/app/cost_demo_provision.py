@@ -79,6 +79,11 @@ MIN_SETTLE_SECONDS = int(os.getenv("COST_DEMO_MIN_SETTLE_SECONDS", "90"))
 # × 5 metrics at $80/1M; ~$32 at $1,830/1M), so this can never hide a straggler.
 SETTLE_EPSILON = float(os.getenv("COST_DEMO_SETTLE_EPSILON", "0.50"))
 
+# Shown verbatim in the drawer when a price had to move with scoring in flight.
+# The run still finishes, so without this the panel reports plain success and
+# the only hint is one red line in a long step list.
+MISPRICE_WARNING = "Curve may be mispriced. Run it again, or use the Fix button."
+
 # Before the FIRST price change, check that an earlier run left nothing in
 # flight. Its window sits outside ours, so this scan has to be wide.
 IDLE_SCAN_DAYS = int(os.getenv("COST_DEMO_IDLE_SCAN_DAYS", "21"))
@@ -139,8 +144,18 @@ def _reset_job() -> None:
             "window": None,
             "steps": [],
             "summary": None,
+            "warnings": [],
         }
     )
+
+
+def _add_warning(message: str) -> None:
+    """Record a problem that does NOT fail the run but makes its output
+    untrustworthy. Kept at job level, not buried in a step, so the UI can shout
+    about it even though the job reaches state 'done'."""
+    with _LOCK:
+        if message not in _JOB.setdefault("warnings", []):
+            _JOB["warnings"].append(message)
 
 
 def _add_step(label: str, status: str, detail: str = "") -> Dict[str, Any]:
@@ -469,9 +484,10 @@ def _run_cost_demo(
             _update_step(
                 idle_step,
                 status="error",
-                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — continuing, but an "
-                f"earlier run's traces may freeze at ${specs[0]['price']:,.0f}",
+                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — an earlier run's "
+                f"traces may freeze at ${specs[0]['price']:,.0f}. {MISPRICE_WARNING}",
             )
+            _add_warning(MISPRICE_WARNING)
 
         summary: Dict[str, Any] = {}
         try:
@@ -506,8 +522,10 @@ def _run_cost_demo(
                     score_step,
                     status="ok" if settled else "error",
                     detail=f"window cost ≈ ${total:,.0f}"
-                    + ("" if settled else " — still scoring at timeout; curve may be mispriced"),
+                    + ("" if settled else f" — still scoring at timeout. {MISPRICE_WARNING}"),
                 )
+                if not settled:
+                    _add_warning(MISPRICE_WARNING)
                 summary[name] = {
                     "window_cost": round(total, 2),
                     "price": price,
@@ -708,8 +726,10 @@ def _heal_one(client, inject, spec: Dict[str, Any], info: Dict[str, Any], start_
         score_step,
         status="ok" if settled else "error",
         detail=f"window cost ≈ ${total:,.0f}"
-        + ("" if settled else " — still scoring at timeout; curve may be mispriced"),
+        + ("" if settled else f" — still scoring at timeout. {MISPRICE_WARNING}"),
     )
+    if not settled:
+        _add_warning(MISPRICE_WARNING)
     return {
         "window_cost": round(total, 2),
         "price": price,
@@ -772,9 +792,10 @@ def _run_fix(
             _update_step(
                 idle_step,
                 status="error",
-                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — continuing, but an "
-                "earlier run's traces may freeze at the wrong price",
+                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — an earlier run's "
+                f"traces may freeze at the wrong price. {MISPRICE_WARNING}",
             )
+            _add_warning(MISPRICE_WARNING)
 
         summary: Dict[str, Any] = {}
         try:

@@ -795,6 +795,10 @@ function CostDemoPanel() {
   };
 
   const win = status?.window;
+  // A run can finish and still have produced a wrong curve, so "done" alone is
+  // not success. Treat any warning as a failed outcome for styling purposes.
+  const warnings = status?.warnings ?? [];
+  const mispriced = warnings.length > 0;
 
   return (
     <div className="space-y-2.5">
@@ -916,7 +920,7 @@ function CostDemoPanel() {
       {status && status.state !== "idle" && (
         <div
           className={`rounded-md border p-2.5 text-xs space-y-1.5 ${
-            status.state === "error"
+            status.state === "error" || mispriced
               ? "border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/30"
               : status.state === "done"
               ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30"
@@ -929,15 +933,28 @@ function CostDemoPanel() {
                 ● {status.phase ? `Phase: ${status.phase}` : "Running…"}
               </span>
             )}
-            {status.state === "done" && (
+            {status.state === "done" && !mispriced && (
               <span className="text-emerald-700 dark:text-emerald-300">
                 ✓ Cost graph extended
+              </span>
+            )}
+            {status.state === "done" && mispriced && (
+              <span className="text-red-700 dark:text-red-300">
+                ⚠ Finished, but the result is not trustworthy
               </span>
             )}
             {status.state === "error" && (
               <span className="text-red-700 dark:text-red-300">✗ Failed</span>
             )}
           </div>
+
+          {mispriced && (
+            <div className="rounded border-2 border-red-500 dark:border-red-500 bg-red-100 dark:bg-red-900/50 p-2 text-[13px] font-bold leading-snug text-red-800 dark:text-red-100">
+              {warnings.map((w, i) => (
+                <div key={i}>⚠ {w}</div>
+              ))}
+            </div>
+          )}
 
           {win && (
             <div className="text-[11px] text-zinc-600 dark:text-zinc-400">
