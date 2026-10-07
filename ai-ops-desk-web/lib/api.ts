@@ -182,6 +182,10 @@ export type CostDemoStatus = {
   } | null;
   steps?: CostDemoStep[];
   summary?: Record<string, unknown> | null;
+  // Problems that do not fail the run but make its output untrustworthy, e.g.
+  // a price had to move while evaluations were still scoring. Present on a
+  // job in state "done", so the UI must not read "done" as success.
+  warnings?: string[];
 };
 
 export async function startCostDemo(
