@@ -26,8 +26,19 @@ agent-control-sdk[galileo] @ git+https://github.com/agentcontrol/agent-control.g
 agent-control-models @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=models
 agent-control-engine @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=engine
 agent-control-telemetry @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=telemetry
-agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/builtin
-agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/contrib/galileo
+# The two evaluator packages are pinned AHEAD of the others, to the commit that
+# removed their direct sqlglotc pin ("use SQLGlot native extra without direct
+# sqlglotc pin", #243). At 916dcdec they require sqlglot[c]>=29.0.0,<29.1.0, and
+# every sqlglotc 29.x release has since been deleted from PyPI, so a fresh
+# install fails with "No matching distribution found for sqlglotc<29.1.0".
+#
+# Only these two move. The SDK, models, engine and telemetry stay at 916dcdec
+# because that is the API the app is written against. The version graph allows
+# the split: evaluators 8.1.0 needs agent-control-models>=7.5.0, and engine
+# 7.9.0 needs agent-control-evaluators>=3.0.0, so both are lower bounds that
+# 7.9.0/8.1.0 satisfy.
+agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@6884ce9c16f85763f029ffba99867993548fc2ae#subdirectory=evaluators/builtin
+agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@6884ce9c16f85763f029ffba99867993548fc2ae#subdirectory=evaluators/contrib/galileo
 # -------------------------------------------------------------------------------
 
 colorama>=0.4.6
