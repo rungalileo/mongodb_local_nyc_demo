@@ -88,6 +88,21 @@ docker build -t voltway-api:local ai-ops-desk
 docker build -t voltway-web:local ai-ops-desk-web
 ```
 
+### Why the Dockerfiles live only on this branch
+
+The public demo is hosted on Railway from `promo-hallucination-clarity`, built by
+Railpack, which runs `uvicorn ... --port $PORT` and `next start` against the port
+Railway injects. Railway auto-detects a Dockerfile in a service root and silently
+switches the builder to it. These Dockerfiles bind **8000** and **3000**, so the
+service builds, starts, and then receives no traffic — it looks like an
+application fault, not a build-configuration change.
+
+> **Before merging this branch into the Railway one**, pin the builder in the
+> Railway UI (service → Settings → Build → Builder) or change both `CMD`s to
+> honour `$PORT`. A `railway.json` would be the tidier fix, but the builder
+> enum must match what Railway actually uses — guessing it is how you get a
+> second outage instead of a fix.
+
 ---
 
 ## Testing locally first
@@ -561,6 +576,12 @@ from a working virtualenv:
 ```bash
 pip freeze | grep -v '^sqlglotc==' > requirements.lock   # then restore the header
 ```
+
+`promo-hallucination-clarity` fixes the same problem the other way, by bumping
+only `agent-control-evaluators` and `-evaluator-galileo` to the upstream commit
+that drops the `sqlglotc` pin (Railpack has no lockfile step to hook). Either
+approach works; this branch keeps the lockfile because the image should install a
+closure that was actually tested, not whatever resolves on build day.
 
 ---
 
