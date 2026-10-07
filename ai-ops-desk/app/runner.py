@@ -4,12 +4,14 @@ Shared runner for the AI Operations Desk multi-agent graph.
 Used by both the CLI (main.py) and the FastAPI backend (app/api.py).
 """
 import json
+import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from galileo import galileo_context, log
 
 from app.graph import create_ops_desk_graph
+from app.session_cache import get_or_create_galileo_session
 from app.toggles import ToggleManager
 from app.galileo_links import galileo_session_url
 from app.agent_control_setup import init_agent_control
@@ -187,23 +189,33 @@ def _attach_trace_metadata(md: Dict[str, str], trace: Any = None) -> None:
 def _start_session(scenario: str, chat_session_id: Optional[str] = None) -> Optional[str]:
     """Explicitly start (or resume) a Galileo session.
 
-    When ``chat_session_id`` is provided, we pass it as the Galileo session's
-    ``external_id``. The SDK's start_session will return the existing session
-    if one already exists for this external_id (see Logger.start_session),
-    which is exactly what we want for a chat conversation that spans many
-    backend requests: every turn in the same chat ends up under one Galileo
-    session, so metrics (e.g. refund-compliance) can correlate the receipt
-    request and the refund request that followed it.
+    Every turn of one chat must land in one Galileo session, so metrics can
+    correlate e.g. the discount offer with the "yes" that applied it.
+
+    ``chat_session_id`` is still passed as the session's ``external_id``, but
+    the SDK's resume-by-external_id cannot be relied on for follow-up turns:
+    it searches the server, the search lags session creation, and when it
+    finds nothing it quietly creates a new session instead. So the first turn
+    creates the session and later turns reattach to the remembered id.
 
     Returns None if Galileo isn't configured.
     """
     try:
-        if chat_session_id:
-            return galileo_context.start_session(
+        if not chat_session_id:
+            return galileo_context.start_session(name=f"ops-desk:{scenario}")
+
+        target = (os.environ.get("GALILEO_PROJECT") or "", os.environ.get("GALILEO_LOG_STREAM") or "")
+        session_id, created = get_or_create_galileo_session(
+            chat_session_id,
+            target,
+            lambda: galileo_context.start_session(
                 name=f"ops-desk:{scenario}",
                 external_id=chat_session_id,
-            )
-        return galileo_context.start_session(name=f"ops-desk:{scenario}")
+            ),
+        )
+        if session_id and not created:
+            galileo_context.set_session(session_id)
+        return session_id
     except Exception:
         return None
 
