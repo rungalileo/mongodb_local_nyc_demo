@@ -221,18 +221,25 @@ Do this imperatively so credentials never land in git.
 placeholder template for reference only.
 
 ```bash
+# read -rs keeps the values out of your shell history
+read -rsp 'Atlas connection string: ' MONGODB_URI; echo
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY; echo
+read -rsp 'Galileo API key: ' GALILEO_API_KEY; echo
+
 kubectl -n voltway create secret generic voltway-secrets \
-  --from-literal=MONGODB_URI='mongodb+srv://USER:PASS@cluster.mongodb.net/?retryWrites=true&w=majority' \
-  --from-literal=OPENAI_API_KEY='sk-proj-...' \
-  --from-literal=GALILEO_API_KEY='...'
+  --from-literal=MONGODB_URI="$MONGODB_URI" \
+  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY"
 ```
+
+The Atlas string is the SRV one from **Atlas → Connect → Drivers**.
 
 > **Do not quote values inside YAML manifests.** The repo's `.env` wraps values
 > in quotes and `python-dotenv` strips them, but Kubernetes passes ConfigMap and
 > Secret values through verbatim. A quoted connection string arrives with the
 > quotes attached and fails with `Invalid URI scheme: URI must begin with
-> 'mongodb://' or 'mongodb+srv://'`. (Using `--from-literal` as above is safe —
-> the shell removes the quotes.)
+> 'mongodb://' or 'mongodb+srv://'`. The `read` approach above avoids this
+> entirely — paste the bare value with no quotes around it.
 
 ### 3. Review the ConfigMap
 

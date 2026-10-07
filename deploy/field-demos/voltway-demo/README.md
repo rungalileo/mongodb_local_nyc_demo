@@ -104,15 +104,23 @@ kubectl apply -f deploy/k8s/namespace.yaml
 
 ## Create the Application Secret
 
-Create the secret imperatively so credentials never land in git. Substitute your
-own values before running:
+Create the secret imperatively so credentials never land in git. `read -rs`
+prompts for each value without echoing it and without recording it in your shell
+history:
 
 ```bash
+read -rsp 'Atlas connection string: ' MONGODB_URI; echo
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY; echo
+read -rsp 'Galileo API key: ' GALILEO_API_KEY; echo
+
 kubectl -n voltway create secret generic voltway-secrets \
-  --from-literal=MONGODB_URI='mongodb+srv://USER:PASS@cluster.mongodb.net/?retryWrites=true&w=majority' \
-  --from-literal=OPENAI_API_KEY='sk-proj-...' \
-  --from-literal=GALILEO_API_KEY='...'
+  --from-literal=MONGODB_URI="$MONGODB_URI" \
+  --from-literal=OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --from-literal=GALILEO_API_KEY="$GALILEO_API_KEY"
 ```
+
+The Atlas value is the SRV connection string from **Atlas → Connect → Drivers**.
+Paste it bare, with no surrounding quotes.
 
 Non-sensitive configuration is already committed as a ConfigMap in
 `deploy/k8s/configmap.yaml` — Galileo URLs, project name, Agent Control settings
