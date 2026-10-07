@@ -12,11 +12,19 @@ Both projects' metrics score on the SAME evaluator model (``gpt-5-nano``),
 pricing is org-wide per model, and each trace's cost is FROZEN at scoring time.
 So we cannot show two different prices at once — we sequence:
 
-  Phase 1: set gpt-5-nano -> $1,830, inject LLM_Evals, poll until it scores.
+  Phase 0: wait until nothing is scoring, so an earlier run's leftovers cannot
+           be caught by Phase 1's price.
+  Phase 1: set gpt-5-nano -> $1,830, inject LLM_Evals, drain its scoring.
   Phase 2: set gpt-5-nano -> $80,    inject Luna_Evals (identical timestamps),
-           poll until it scores.
+           drain its scoring.
   Finally: remove the override so the real default returns (protects any live
            project — e.g. volt-assistant — that also scores on gpt-5-nano).
+
+Every price change is therefore fenced by a drain. Skipping one does not fail
+loudly — it misprices whichever traces were still in the queue, and the only
+evidence is a curve at the wrong level days later. ``_poll_scoring`` is strict
+about this for that reason, and reports when it gives up instead of timing out
+silently.
 
 Because that takes several minutes, it runs in a background thread and the
 drawer polls ``get_cost_demo_status()``.
@@ -54,9 +62,27 @@ MAX_TRACES = int(os.getenv("COST_DEMO_MAX_TRACES", "1000"))
 SEED = int(os.getenv("COST_DEMO_SEED", "7"))
 FALLBACK_BACKFILL_DAYS = 14  # used only if a project has NO existing cost data
 
-# Scoring is async; poll the cost graph until the window total plateaus.
+# Scoring is async and arrives in bursts, so one pair of equal reads is a lull,
+# not an empty queue. Require several consecutive unchanged reads AND a minimum
+# quiet period before calling a window scored: the org-wide price changes right
+# afterwards, and every straggler freezes at whatever price is live then.
 POLL_SECONDS = int(os.getenv("COST_DEMO_POLL_SECONDS", "20"))
-SCORING_TIMEOUT_SECONDS = int(os.getenv("COST_DEMO_SCORING_TIMEOUT", "600"))
+SCORING_TIMEOUT_SECONDS = int(os.getenv("COST_DEMO_SCORING_TIMEOUT", "900"))
+STABLE_READS = int(os.getenv("COST_DEMO_STABLE_READS", "3"))
+MIN_SETTLE_SECONDS = int(os.getenv("COST_DEMO_MIN_SETTLE_SECONDS", "90"))
+
+# "Unchanged" must be an ABSOLUTE threshold, deliberately not a percentage. A
+# percentage scales with the running total, so a steadily-climbing cost
+# eventually satisfies it and the drain declares victory while the queue is
+# still filling — which is the original bug in a subtler form. Cost only moves
+# when an evaluation completes, and the cheapest completion is ~$1.40 (one trace
+# × 5 metrics at $80/1M; ~$32 at $1,830/1M), so this can never hide a straggler.
+SETTLE_EPSILON = float(os.getenv("COST_DEMO_SETTLE_EPSILON", "0.50"))
+
+# Before the FIRST price change, check that an earlier run left nothing in
+# flight. Its window sits outside ours, so this scan has to be wide.
+IDLE_SCAN_DAYS = int(os.getenv("COST_DEMO_IDLE_SCAN_DAYS", "21"))
+IDLE_TIMEOUT_SECONDS = int(os.getenv("COST_DEMO_IDLE_TIMEOUT", "300"))
 
 PROJECT_SPECS: List[Dict[str, Any]] = [
     {
@@ -435,9 +461,21 @@ def _run_cost_demo(
             return
         _update_step(planning, status="ok", detail=f"{traces} traces over {days}d ({start_z} → {end_z})")
 
+        # 3) Nothing may still be scoring when we move the org-wide price.
+        idle_step = _add_step("Wait for in-flight scoring to drain", "running")
+        if _wait_for_idle_scoring(client, ready, idle_step):
+            _update_step(idle_step, status="ok", detail="no evaluations in flight")
+        else:
+            _update_step(
+                idle_step,
+                status="error",
+                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — continuing, but an "
+                f"earlier run's traces may freeze at ${specs[0]['price']:,.0f}",
+            )
+
         summary: Dict[str, Any] = {}
         try:
-            # 3) Phased inject: each project at its own frozen price.
+            # 4) Phased inject: each project at its own frozen price.
             for spec, info in zip(specs, ready):
                 name = spec["name"]
                 price = spec["price"]
@@ -461,13 +499,23 @@ def _run_cost_demo(
                 )
                 _update_step(inject_step, status="ok")
 
-                # 4) Poll scoring until the window cost plateaus (freezes at price).
+                # 5) Drain scoring fully before the price moves again.
                 score_step = _add_step(f"{name}: wait for scoring @ ${price:,.0f}", "running")
-                total = _poll_scoring(client, info["project_id"], start_z, end_z, score_step)
-                _update_step(score_step, status="ok", detail=f"window cost ≈ ${total:,.0f}")
-                summary[name] = {"window_cost": round(total, 2), "price": price, "traces": traces}
+                total, settled = _poll_scoring(client, info["project_id"], start_z, end_z, score_step)
+                _update_step(
+                    score_step,
+                    status="ok" if settled else "error",
+                    detail=f"window cost ≈ ${total:,.0f}"
+                    + ("" if settled else " — still scoring at timeout; curve may be mispriced"),
+                )
+                summary[name] = {
+                    "window_cost": round(total, 2),
+                    "price": price,
+                    "traces": traces,
+                    "settled": settled,
+                }
         finally:
-            # 5) Always revert the org-wide price so live traffic isn't inflated.
+            # 6) Always revert the org-wide price so live traffic isn't inflated.
             _set_phase(None)
             reset_step = _add_step(f"Reset {EVAL_MODEL} price override", "running")
             try:
@@ -482,11 +530,31 @@ def _run_cost_demo(
             _JOB["summary"] = summary
 
 
-def _poll_scoring(client, project_id: str, start_iso: str, end_iso: str, step: Dict[str, Any]) -> float:
-    """Poll the window cost until two consecutive reads agree (and are > 0), or
-    the timeout hits. Returns the last observed total."""
-    prev: Optional[float] = None
+def _is_quiet(last: float, prev: float) -> bool:
+    """Whether two consecutive cost reads are the same number, give or take."""
+    return abs(last - prev) <= SETTLE_EPSILON
+
+
+def _poll_scoring(
+    client, project_id: str, start_iso: str, end_iso: str, step: Dict[str, Any]
+) -> Tuple[float, bool]:
+    """Wait for the evaluator queue to drain for one project's window.
+
+    Returns ``(window_cost, settled)``. ``settled`` is False if the timeout hit
+    while cost was still moving, which means the caller is about to change the
+    price with evaluations still in flight — the one condition that misprices a
+    curve, so it is reported rather than swallowed.
+
+    Draining matters more than it looks: cost freezes per trace at the price
+    that was live when its evaluators finished. Exit early and the stragglers
+    freeze at the *next* phase's price (the cheap project jumps to the expensive
+    project's level) or, once the job clears the override, at the model's real
+    default (the curve collapses towards $0).
+    """
     deadline = time.time() + SCORING_TIMEOUT_SECONDS
+    prev: Optional[float] = None
+    stable = 0
+    last_change = time.time()
     last = 0.0
     while time.time() < deadline:
         try:
@@ -495,12 +563,65 @@ def _poll_scoring(client, project_id: str, start_iso: str, end_iso: str, step: D
             _update_step(step, detail=f"poll error: {e}")
             time.sleep(POLL_SECONDS)
             continue
-        _update_step(step, detail=f"scoring… window cost ≈ ${last:,.0f}")
-        if prev is not None and last > 1.0 and abs(last - prev) <= max(1.0, 0.01 * last):
-            return last
+
+        if prev is not None and _is_quiet(last, prev):
+            stable += 1
+        else:
+            stable = 0
+            last_change = time.time()
         prev = last
+
+        quiet_for = time.time() - last_change
+        _update_step(
+            step,
+            detail=f"scoring… ${last:,.0f} · stable {min(stable, STABLE_READS)}/{STABLE_READS}"
+            f" · quiet {int(quiet_for)}s/{MIN_SETTLE_SECONDS}s",
+        )
+        # Cost must actually have appeared: we just injected traces, so a window
+        # sitting at $0 is scoring that has not started, not scoring that ended.
+        if last > 1.0 and stable >= STABLE_READS and quiet_for >= MIN_SETTLE_SECONDS:
+            return last, True
         time.sleep(POLL_SECONDS)
-    return last
+    return last, False
+
+
+def _wait_for_idle_scoring(client, ready: List[Dict[str, Any]], step: Dict[str, Any]) -> bool:
+    """Confirm no evaluations are in flight before the first price change.
+
+    A previous run can still be scoring when this one starts. The instant
+    Phase 1 raises the price to the LLM-judge figure, those stragglers freeze at
+    it — which is how Luna_Evals ends up level with LLM_Evals instead of ~23x
+    below it. The earlier run's window is outside ours, so scan a wide range.
+    """
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=IDLE_SCAN_DAYS)
+    start_iso, end_iso = start.strftime(_ISO), end.strftime(_ISO)
+    deadline = time.time() + IDLE_TIMEOUT_SECONDS
+    prev: Optional[Dict[str, float]] = None
+    stable = 0
+    while time.time() < deadline:
+        try:
+            cur = {r["name"]: _window_cost(client, r["project_id"], start_iso, end_iso) for r in ready}
+        except Exception as e:  # noqa: BLE001
+            _update_step(step, detail=f"poll error: {e}")
+            time.sleep(POLL_SECONDS)
+            continue
+
+        if prev is not None and all(_is_quiet(cur[n], prev[n]) for n in cur):
+            stable += 1
+        else:
+            stable = 0
+        prev = cur
+
+        _update_step(
+            step,
+            detail=f"idle {min(stable, STABLE_READS)}/{STABLE_READS} · "
+            + " · ".join(f"{n} ${v:,.0f}" for n, v in sorted(cur.items())),
+        )
+        if stable >= STABLE_READS:
+            return True
+        time.sleep(POLL_SECONDS)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -582,9 +703,20 @@ def _heal_one(client, inject, spec: Dict[str, Any], info: Dict[str, Any], start_
     _update_step(inj_step, status="ok")
 
     score_step = _add_step(f"{name}: wait for scoring @ ${price:,.0f}", "running")
-    total = _poll_scoring(client, info["project_id"], start_z, end_z, score_step)
-    _update_step(score_step, status="ok", detail=f"window cost ≈ ${total:,.0f}")
-    return {"window_cost": round(total, 2), "price": price, "traces": traces, "from": start_z[:10]}
+    total, settled = _poll_scoring(client, info["project_id"], start_z, end_z, score_step)
+    _update_step(
+        score_step,
+        status="ok" if settled else "error",
+        detail=f"window cost ≈ ${total:,.0f}"
+        + ("" if settled else " — still scoring at timeout; curve may be mispriced"),
+    )
+    return {
+        "window_cost": round(total, 2),
+        "price": price,
+        "traces": traces,
+        "from": start_z[:10],
+        "settled": settled,
+    }
 
 
 def _run_fix(
@@ -632,6 +764,17 @@ def _run_fix(
             with _LOCK:
                 _JOB["summary"] = {"note": "Both curves look healthy; nothing to fix."}
             return
+
+        idle_step = _add_step("Wait for in-flight scoring to drain", "running")
+        if _wait_for_idle_scoring(client, readys, idle_step):
+            _update_step(idle_step, status="ok", detail="no evaluations in flight")
+        else:
+            _update_step(
+                idle_step,
+                status="error",
+                detail=f"still scoring after {IDLE_TIMEOUT_SECONDS}s — continuing, but an "
+                "earlier run's traces may freeze at the wrong price",
+            )
 
         summary: Dict[str, Any] = {}
         try:
