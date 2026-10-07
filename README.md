@@ -1,17 +1,27 @@
 # Voltway — AI Ops Desk
 
-A customer-support agent for a fictional e-scooter retailer, built to demo
-Galileo observability and Agent Control on a real LangGraph agent talking to a
-real MongoDB Atlas database. Two demos run on top of it:
+A customer-support agent for Voltway, a fictional online retailer, built to show
+Splunk Agent Observability and Agent Control working against a real LangGraph
+agent and a real MongoDB Atlas database.
 
-- **Expired promo** — the agent reads a stale promo cache, proposes a discount
-  that expired, and an LLM-as-judge eval catches it. Walkthrough:
-  [`ai-ops-desk/EXPIRED_PROMO_DEMO.md`](ai-ops-desk/EXPIRED_PROMO_DEMO.md).
-- **Integration costs** — contrasts the cost of LLM-as-judge evaluators against
-  Luna evaluators on the Console's cost graph. Walkthrough:
-  [`ai-ops-desk/integration-cost-demo/README.md`](ai-ops-desk/integration-cost-demo/README.md).
+**The demo is the expired promo.** The agent reads a stale promo cache, proposes
+a discount that has already expired, and an LLM-as-judge eval catches it.
+Walkthrough: [`ai-ops-desk/EXPIRED_PROMO_DEMO.md`](ai-ops-desk/EXPIRED_PROMO_DEMO.md).
+
+**Integration costs is setup, not a demo.** It backfills evaluator traffic so
+that the Console's cost view shows, across several weeks of history, what
+LLM-as-judge evaluators cost compared with Luna-based judges — the kind of
+long-run comparison you can point at but could never produce live. Run it ahead
+of time and the graph is simply there when you need it:
+[`ai-ops-desk/integration-cost-demo/README.md`](ai-ops-desk/integration-cost-demo/README.md).
+Budget a few minutes for the run, and don't do it in front of an audience — the
+chart is unreliable until the job finishes.
 
 Two processes: a FastAPI backend on **8000** and a Next.js frontend on **3000**.
+
+> A naming note: the environment variables, the Python SDK and the on-disk state
+> file are all still named `GALILEO_*` / `galileo`. That is the underlying SDK,
+> not a separate product — leave those identifiers exactly as they are.
 
 ---
 
@@ -22,9 +32,9 @@ Two processes: a FastAPI backend on **8000** and a Next.js frontend on **3000**.
 | Python 3.12 and Node 20+ | Backend is FastAPI, frontend is Next 16 / React 19 |
 | A **MongoDB Atlas** cluster | Must be Atlas, not self-hosted — the refund-policy path uses `$vectorSearch`, which only Atlas provides |
 | An OpenAI API key | Runs the agent itself |
-| A **Galileo API key for the stack you point at** | Keys are per-stack. A key from a different Galileo instance returns `401 Invalid credentials`, which is the single most common setup failure |
+| A **Splunk Agent Observability API key for the stack you point at** | Keys are per-stack. A key from a different instance returns `401 Invalid credentials`, which is the single most common setup failure |
 
-This repo is configured against the Splunk AI Observability demo stack
+This repo is configured against the Splunk Agent Observability demo stack
 (`demo.sao.splunkcloud.com`). Issue your key from that Console, not another one.
 
 ---
@@ -66,11 +76,11 @@ Fill in the four values that are yours:
 ```bash
 MONGODB_URI="<your Atlas SRV string, from Atlas → Connect → Drivers>"
 OPENAI_API_KEY="<your OpenAI key>"
-GALILEO_API_KEY="<your key from the SAO Console>"
+GALILEO_API_KEY="<your key from the Splunk Agent Observability Console>"
 GALILEO_PROJECT="<see "Choosing your project" below>"
 ```
 
-Leave these as they are — they point at the SAO stack and are not secrets:
+Leave these as they are — they point at the demo stack and are not secrets:
 
 ```bash
 MONGODB_DATABASE=ai_ops_desk
@@ -90,8 +100,9 @@ Two more things while you're in Atlas:
 
 - **Allowlist your IP** under Network Access, or every query silently returns
   nothing and the user list shows up empty.
-- The Galileo API key is also what the cost demo uses to change a model price
-  org-wide. If you share a stack with colleagues, read
+- That same API key is what the integration-cost setup uses to change a model's
+  price **org-wide**, which affects every project on that model, not just yours.
+  If you share a stack with colleagues, read
   [`ai-ops-desk/integration-cost-demo/README.md`](ai-ops-desk/integration-cost-demo/README.md)
   before pressing those buttons.
 
@@ -150,7 +161,7 @@ drawer** in the app and use **Generate demo traffic**:
    `Default`.
 2. Run it.
 
-That creates the Galileo project and log stream, enables the demo evals, attaches
+That creates the project and log stream, enables the demo evals, attaches
 the `promo-proposal-steer` control (disabled), injects a few weeks of promo
 conversations, and repoints live chat at the new project.
 
@@ -227,7 +238,7 @@ hunting for the trace in the Console.
 
 | Symptom | Cause |
 |---|---|
-| `401 Invalid credentials` from Galileo | Key issued for a different stack than `GALILEO_API_URL` |
+| `401 Invalid credentials` | Key issued for a different stack than `GALILEO_API_URL` |
 | Empty user list, no errors | Your IP isn't allowlisted in Atlas, or `MONGODB_URI` lost its quotes |
 | `Unable to generate response due to API error` | Corporate TLS interception breaking the OpenAI call |
 | Refund answers cite no policy | `policy_vectors` index missing, or `setup_policies.py` never ran |
@@ -242,8 +253,8 @@ covers the agent internals, the failure toggles, and the CLI scenario runner.
 
 ```
 ai-ops-desk/            FastAPI backend, LangGraph agent, seed scripts
-  app/                  API, agent, Galileo + Agent Control wiring
-  integration-cost-demo/ Cost-graph demo and its trace injector
+  app/                  API, agent, observability + Agent Control wiring
+  integration-cost-demo/ Cost-view setup and its trace injector
 ai-ops-desk-web/        Next.js frontend (chat UI + Ops drawer)
 DEPLOY.md               Railway deployment notes
 ```
