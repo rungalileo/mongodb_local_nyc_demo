@@ -19,8 +19,9 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 
-# Local-only helper scripts for the integration-cost demo; not part of the app.
-integration-cost-demo/
+# integration-cost-demo/inject_cost_traces.py must ship: the Ops drawer's
+# integration-cost buttons load it at runtime. Only its offline test stays out.
+integration-cost-demo/test_*.py
 
 # Docs and local assets
 *.md
