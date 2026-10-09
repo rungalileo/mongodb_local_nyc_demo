@@ -16,8 +16,10 @@ name: Publish container images
 
 on:
   push:
+    # Only branches that contain this file and the Dockerfiles can trigger it.
+    # promo-hallucination-clarity has neither (Railway would hijack its build).
     branches:
-      - promo-hallucination-clarity
+      - k8s-deployment
       - main
     tags:
       - "v*"
@@ -73,7 +75,7 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ github.ref_name == 'promo-hallucination-clarity' }}
+            type=raw,value=latest,enable=${{ github.ref_name == 'k8s-deployment' }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

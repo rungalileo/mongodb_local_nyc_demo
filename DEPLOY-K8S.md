@@ -55,13 +55,24 @@ needs GitHub access.
 ## Images
 
 Published by [`.github/workflows/publish-images.yml`](.github/workflows/publish-images.yml)
-on every push to `promo-hallucination-clarity` / `main`:
+on every push to `k8s-deployment` (doc-only pushes are skipped), or on demand
+from Actions → *Publish container images* → *Run workflow*:
 
 - `ghcr.io/rungalileo/voltway-api`
 - `ghcr.io/rungalileo/voltway-web`
 
-Tags: `sha-<commit>` (immutable — use this for anything reproducible), the branch
-name, and `latest`.
+Tags: `sha-<full commit hash>` (immutable — use this for anything reproducible),
+the branch name, and `latest`.
+
+A GitHub workflow only runs on branches that contain its file, so pushes to
+`promo-hallucination-clarity` never build images — that branch deliberately has
+neither the workflow nor the Dockerfiles (see
+[below](#why-the-dockerfiles-live-only-on-this-branch)).
+
+The manifests use `:latest` with `imagePullPolicy: Always`, but an image is only
+pulled when a pod starts. After a build, run
+`kubectl -n voltway rollout restart deploy/voltway-api deploy/voltway-web` to
+pick it up — or pin a `sha-` tag in `kustomization.yaml` and re-apply.
 
 ### Why this org, and the one manual step
 
@@ -129,6 +140,10 @@ kubectl -n voltway create secret generic voltway-secrets \
   --from-literal=MONGODB_URI='...' \
   --from-literal=OPENAI_API_KEY='...' \
   --from-literal=GALILEO_API_KEY='...'
+
+# The overlay keeps the Basic Auth middleware, so its Secret must exist too,
+# or every request returns 500.
+deploy/scripts/set-password.sh
 
 kubectl apply -k deploy/local-test
 kubectl -n voltway rollout status deploy/voltway-api
@@ -606,5 +621,7 @@ must exist for the refund path to retrieve anything.
 
 Code lives in the Galileo repo
 [`rungalileo/mongodb_local_nyc_demo`](https://github.com/rungalileo/mongodb_local_nyc_demo)
-on branch `promo-hallucination-clarity`. Demo walkthrough:
+on branch `k8s-deployment`: the app from `promo-hallucination-clarity` (the
+Railway demo) plus everything in this document. App fixes are made there first
+and cherry-picked here; never merge the two branches. Demo walkthrough:
 [`ai-ops-desk/EXPIRED_PROMO_DEMO.md`](ai-ops-desk/EXPIRED_PROMO_DEMO.md).

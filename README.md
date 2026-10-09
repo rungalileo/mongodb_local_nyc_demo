@@ -119,8 +119,9 @@ before:
    unless you are changing project (see below) or stack.
 3. `deploy/scripts/set-password.sh` — without this Secret, Traefik returns 500
    for every request.
-4. Pin the image tag (see [Images](#images)), then `kubectl apply -k deploy/k8s`.
-   Use `-k`, not `-f`, so the namespace is created before anything that needs it.
+4. `kubectl apply -k deploy/k8s` — use `-k`, not `-f`, so the namespace is
+   created before anything that needs it. For a demo you need to rely on, pin
+   the image tag first (see [Images](#images)).
 
 Provisioning the instance, TLS, and verification are covered step by step in
 [Target environment](DEPLOY-K8S.md#target-environment-o11y-field-demos-k3d-instance)
@@ -244,15 +245,23 @@ deletes the marker. Use it after any repoint.
 `ghcr.io/rungalileo/voltway-api` and `ghcr.io/rungalileo/voltway-web`, built by
 [`.github/workflows/publish-images.yml`](.github/workflows/publish-images.yml).
 
-**Build them from this branch by hand**: GitHub → Actions → *Publish container
-images* → *Run workflow* → branch `k8s-deployment`. That's the branch with the
-Dockerfiles, and pushing to it does not start a build on its own.
+Every push to `k8s-deployment` builds both images, unless the push changes only
+Markdown. To rebuild without a push: GitHub → Actions → *Publish container
+images* → *Run workflow* → branch `k8s-deployment`. Pushes to
+`promo-hallucination-clarity` never build images — that branch has no
+Dockerfiles.
 
-A run from this branch publishes two tags per image: `k8s-deployment` and
-`sha-<full commit hash>`. It does **not** move `latest`, and the manifests
-reference `latest`, so pin the tag you built in
-[`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml) before
-applying:
+Each build publishes three tags: `sha-<full commit hash>`, `k8s-deployment`, and
+`latest`. The manifests use `latest`, which is fine while setting up. A running
+pod keeps the image it started with, so pick up a new build with:
+
+```bash
+kubectl -n voltway rollout restart deploy/voltway-api deploy/voltway-web
+```
+
+For anything you need to reproduce — a live demo, an event — pin the exact
+build in [`deploy/k8s/kustomization.yaml`](deploy/k8s/kustomization.yaml)
+instead, because a `sha-` tag can never change underneath you:
 
 ```yaml
 images:
@@ -261,8 +270,6 @@ images:
   - name: ghcr.io/rungalileo/voltway-web
     newTag: sha-<full commit hash>
 ```
-
-Prefer the `sha-` tag: it can never change underneath you.
 
 After the very first build, make both packages public once (repo → Packages →
 package → Package settings → Change visibility → Public), or the cluster needs
@@ -300,7 +307,7 @@ a buffering middleware to this route. See
 | Public URL won't load, certificate stuck `Pending` | cert-manager or its issuer is missing; see [Ingress and TLS](DEPLOY-K8S.md#ingress-and-tls) |
 | ConfigMap changes seem ignored | Pod not restarted, or a `.env` got baked into the image |
 | Traces land in the wrong project | A UI pin is overriding the ConfigMap — see above |
-| Deployed app is missing a recent fix | It's running an old `latest`; pin a `sha-` tag (see [Images](#images)) |
+| Deployed app is missing a recent fix | The pod predates the build — `rollout restart`, or pin a `sha-` tag (see [Images](#images)) |
 
 `port-forward` goes straight to the Service and skips both the Ingress and Basic
 Auth, which is the fastest way to tell an app problem from an ingress or auth

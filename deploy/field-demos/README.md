@@ -23,7 +23,7 @@ the folder sits at that repo's root. Links back to the application repo are
 absolute, so they work from either location.
 
 > Before copying, check one thing: those absolute links point at `blob/main`, and
-> this work is currently on the `promo-hallucination-clarity` branch. They will
+> this work is currently on the `k8s-deployment` branch. They will
 > 404 until it merges. Either merge first or temporarily swap `main` for the
 > branch name.
 
