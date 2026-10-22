@@ -16,14 +16,15 @@ typing-extensions>=4.5.0
 # PyPI once the bridge is published.
 galileo[openai] @ git+https://github.com/rungalileo/galileo-python.git@627e90f8
 
-# Agent Control SDK pinned to the same commit ace-demo uses, with the
-# [galileo] extra so the Galileo logger sink is auto-registered.
-agent-control-sdk[galileo] @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=sdks/python
-agent-control-models @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=models
-agent-control-engine @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=engine
-agent-control-telemetry @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=telemetry
-agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/builtin
-agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@916dcdec1f435679e9643b24d53026da2a074302#subdirectory=evaluators/contrib/galileo
+# Agent Control SDK pinned to release v8.2.0, with the [galileo] extra so
+# the Galileo logger sink is auto-registered. Releases before v8.2.0 pin
+# sqlglotc 29.0.x, which is no longer on PyPI, so they fail to install.
+agent-control-sdk[galileo] @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=sdks/python
+agent-control-models @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=models
+agent-control-engine @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=engine
+agent-control-telemetry @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=telemetry
+agent-control-evaluators @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=evaluators/builtin
+agent-control-evaluator-galileo @ git+https://github.com/agentcontrol/agent-control.git@v8.2.0#subdirectory=evaluators/contrib/galileo
 # -------------------------------------------------------------------------------
 
 colorama>=0.4.6
