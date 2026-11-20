@@ -18,11 +18,12 @@ data:
   # mismatched pair: every request failed with
   #   "Galileo API returned HTTP status code 401 ... Invalid credentials."
   #
-  # This is the stack the demo runs against. Keep both on demo.sao, matching
-  # ai-ops-desk/.env. Any other stack also needs its own GALILEO_API_KEY; see
-  # DEPLOY-K8S.md before changing these.
-  GALILEO_CONSOLE_URL: https://console.demo.sao.splunkcloud.com
-  GALILEO_API_URL: https://api.demo.sao.splunkcloud.com
+  # This is the stack the demo runs against (the multitenant cluster, Voltway
+  # org), matching ai-ops-desk/.env. The console and API live on different
+  # domains, so neither can be derived from the other. Any other stack also
+  # needs its own GALILEO_API_KEY; see DEPLOY-K8S.md before changing these.
+  GALILEO_CONSOLE_URL: https://console.multitenant.galileocloud.io
+  GALILEO_API_URL: https://api.multitenant.sao.splunkcloud.com
   GALILEO_PROJECT: volt-assistant
   GALILEO_LOG_STREAM: Default
 
@@ -34,11 +35,11 @@ data:
   # that is how the working local config is set up, so don't "fix" it to match.
   AGENT_CONTROL_MODE: enterprise
   AGENT_CONTROL_ENABLED: "true"
-  AGENT_CONTROL_URL: https://agent-control.demo-v2.galileocloud.io
+  AGENT_CONTROL_URL: https://console.multitenant.sao.splunkcloud.com/api/agent-control
   AGENT_CONTROL_AGENT_NAME: ai-ops-desk
   AGENT_CONTROL_TARGET_TYPE: log_stream
   AGENT_CONTROL_RUNTIME_AUTH_MODE: jwt
-  AGENT_CONTROL_API_KEY_HEADER: Galileo-API-Key
+  AGENT_CONTROL_API_KEY_HEADER: Splunk-AO-API-Key
   # 5s instead of the SDK's 60s so toggling a control in the Console takes
   # effect fast enough to demo live.
   AGENT_CONTROL_REFRESH_INTERVAL_SECONDS: "5"

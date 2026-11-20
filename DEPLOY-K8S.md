@@ -275,12 +275,13 @@ The Atlas string is the SRV one from **Atlas → Connect → Drivers**.
 
 Edit [`deploy/k8s/configmap.yaml`](deploy/k8s/configmap.yaml) and confirm:
 
-The demo runs against the **`demo.sao.splunkcloud.com`** stack, and the committed
-ConfigMap already uses it, matching `ai-ops-desk/.env`:
+The demo runs against the **multitenant** stack (Voltway org), and the committed
+ConfigMap already uses it, matching `ai-ops-desk/.env`. The console and API are
+on different domains:
 
 ```yaml
-GALILEO_CONSOLE_URL: https://console.demo.sao.splunkcloud.com
-GALILEO_API_URL: https://api.demo.sao.splunkcloud.com
+GALILEO_CONSOLE_URL: https://console.multitenant.galileocloud.io
+GALILEO_API_URL: https://api.multitenant.sao.splunkcloud.com
 ```
 
 **Leave these alone.** The two URLs and `GALILEO_API_KEY` must all belong to the
@@ -293,9 +294,10 @@ takes the whole demo down. Any stack change requires a new API key issued for
 that stack.
 
 `AGENT_CONTROL_URL` points at a **different** host than `GALILEO_API_URL`
-(`agent-control.demo-v2.galileocloud.io`). That is intentional and matches the
-working config; don't "correct" it to match. If traces log fine but the Ops
-drawer shows no controls, this is the value to check.
+(`console.multitenant.sao.splunkcloud.com/api/agent-control`), and
+`AGENT_CONTROL_API_KEY_HEADER` is `Splunk-AO-API-Key`. Both are intentional and
+match the working config; don't "correct" them. If traces log fine but the Ops
+drawer shows no controls, these are the values to check.
 
 Two keys are in the ConfigMap but not in `.env`, because they only matter in a
 cluster: `ALLOWED_ORIGINS` (set to your public hostname) and
