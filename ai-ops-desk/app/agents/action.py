@@ -2,7 +2,6 @@ from re import U
 import asyncio
 import time
 import random
-from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from colorama import Fore, Style
@@ -17,6 +16,14 @@ from app.session_cache import recall_promo, remember_promo, clear_promo
 from galileo import log
 
 from agent_control import control, ControlViolationError, ControlSteerError
+
+
+def _discount_pct(discount_usd: float, list_price: float) -> int:
+    # Whole-number % of list price ($200/$1,000 = 20, $700/$1,000 = 70).
+    # Rounded to an int so the customer copy never shows a decimal.
+    if list_price <= 0:
+        return 0
+    return int(round(discount_usd / list_price * 100))
 
 
 def _receipt_total_from_orders(orders: List[Any]) -> tuple[float | None, str | None, str | None]:
@@ -669,14 +676,70 @@ class ActionAgent:
             "status_message": "Receipt retrieved",
         }
 
-    @log(span_type="tool", name="Check Promotions")
     async def _check_promotions(self, user_query: str, user_id: str, policy_output: PolicyOutput, records_output: RecordsOutput, latest_sentiment: str) -> Dict[str, Any]:
-        """Look up promotions for the item the customer is asking about.
+        """Look up promos for the item, let the LLM pick one, and propose it.
 
-        Reads promos from a stale cache (``get_product_promotions`` does NOT
-        filter on ``effective_until``), so expired offers come back looking
-        live. This is the root-cause step the demo showcases: the data the
-        agent reasons over already bypasses the promo end date.
+        Deliberately not ``@log``-ed: each step is its own span under the Action
+        Agent, in the order it happens — ``Check Promotions`` (lookup),
+        ``Select Promotion`` (+ steer guard / re-pick), ``Propose Promotion``.
+        A span records its output when it returns, so wrapping all three in one
+        span would show the final proposal on the lookup step.
+        """
+        lookup = await self._lookup_promotions(user_query)
+        if lookup.get("status") != 200:
+            return lookup
+
+        product_name = lookup["product_name"]
+        list_price = lookup["list_price"]
+
+        # Hand the candidate promos (each with its end date + expired flag)
+        # to the LLM and let *it* decide which to offer. Prompted only to "find
+        # the best deal", it greedily picks the largest discount — the expired
+        # one — even though the end date is right in front of it. That model
+        # choice (not a Python max()) is the reasoning failure this demo shows.
+        # A steer control on the Select Promotion step turns it around to a
+        # currently-valid promo.
+        proposed, steered = await self._select_promotion(
+            lookup["promotions"], product_name, list_price
+        )
+        if proposed is None and not steered:
+            clear_promo(self._chat_session_id)
+            return lookup
+
+        result = {**lookup, **self._propose_promotion(product_name, list_price, proposed, steered)}
+
+        if proposed:
+            # Stash the offer so a follow-up "yes" applies this exact promo.
+            # No-op when there's no chat session (CLI/traffic generator).
+            remember_promo(self._chat_session_id, {
+                "product_name": product_name,
+                "sku": lookup["sku"],
+                "currency": lookup["currency"],
+                "list_price": list_price,
+                "discount_usd": result["proposed_discount_usd"],
+                "discount_pct": result["proposed_discount_pct"],
+                "promo_code": proposed["code"],
+                "promo_description": proposed["description"],
+                "promo_end_date": proposed["effective_until"],
+                "promo_expired": bool(proposed["expired"]),
+                "promo_last_updated_at": proposed.get("last_updated_at"),
+                "discount_tier": proposed["tier"],
+            })
+        else:
+            # Steered away from the only (expired) offer. Clear any stale
+            # pending promo so a later "yes" can't resurrect it.
+            clear_promo(self._chat_session_id)
+
+        return result
+
+    @log(span_type="tool", name="Check Promotions")
+    async def _lookup_promotions(self, user_query: str) -> Dict[str, Any]:
+        """Look up the promotions for the item the customer is asking about.
+
+        Returns every promo for the SKU (``get_product_promotions`` does NOT
+        filter on ``effective_until``), each with its end date and ``expired``
+        flag as derived by the data layer. The data is accurate; the failure
+        the demo shows is the Select Promotion step picking the expired offer.
         """
         time.sleep(random.uniform(0.05, 0.15))
 
@@ -695,8 +758,6 @@ class ActionAgent:
         currency = product.get("currency", "USD")
         promos = await get_product_promotions(sku) or []
 
-        now = datetime.utcnow()
-
         def _discount_usd(discount_type: Any, discount_value: Any) -> float:
             try:
                 value = float(discount_value or 0.0)
@@ -706,118 +767,72 @@ class ActionAgent:
                 return round(list_price * value, 2)
             return round(value, 2)
 
-        def _discount_pct(discount_usd: float) -> int:
-            # Whole-number % of list price ($200/$1,000 = 20, $700/$1,000 = 70).
-            # Rounded to an int so the customer copy never shows a decimal.
-            if list_price <= 0:
-                return 0
-            return int(round(discount_usd / list_price * 100))
-
         promotions: List[Dict[str, Any]] = []
         for promo in promos:
-            # Demo-proof dates: derive end / last-updated RELATIVE TO TODAY from
-            # the promo's tier instead of trusting the seeded absolute date. A
-            # fixed seeded date drifts — a promo seeded "live" (+30d) in August
-            # reads as expired by October, and by December BOTH promos would look
-            # expired, breaking the steer path. Anchoring to `now` keeps the live
-            # promo ~30d ahead and the stale one ~7d past on any demo day.
-            is_live_promo = str(promo.get("tier", "")).lower() == "live"
-            if is_live_promo:
-                end = now + timedelta(days=30)          # always currently valid
-                last_updated = now - timedelta(days=1)  # freshly synced
-            else:
-                end = now - timedelta(days=7)           # always just expired
-                last_updated = now - timedelta(days=60) # stale record
-            expired = end < now
+            discount_usd = _discount_usd(promo.get("discount_type"), promo.get("discount_value"))
             promotions.append({
                 "code": promo.get("code"),
                 "description": promo.get("description"),
                 "discount_type": promo.get("discount_type"),
                 "discount_value": promo.get("discount_value"),
                 "tier": promo.get("tier"),
-                "effective_until": end.isoformat(),
-                "expired": expired,
-                # When the source record was last refreshed. The stale QMobile
-                # promo carries an old date (its "expired" flag was never
-                # updated), so this surfaces the staleness right in the span.
-                "last_updated_at": last_updated.isoformat(),
-                "discount_usd": _discount_usd(promo.get("discount_type"), promo.get("discount_value")),
-                "discount_pct": _discount_pct(
-                    _discount_usd(promo.get("discount_type"), promo.get("discount_value"))
-                ),
+                "effective_until": promo.get("effective_until"),
+                "expired": bool(promo.get("expired")),
+                "last_updated_at": promo.get("last_updated_at"),
+                "discount_usd": discount_usd,
+                "discount_pct": _discount_pct(discount_usd, list_price),
             })
 
-        has_expired_promo = any(p["expired"] for p in promotions)
-
-        result: Dict[str, Any] = {
+        return {
             "status": 200,
             "product_name": product.get("product_name"),
             "sku": sku,
             "list_price": list_price,
             "currency": currency,
             "promotions": promotions,
-            "has_expired_promo": has_expired_promo,
+            "has_expired_promo": any(p["expired"] for p in promotions),
             "status_message": (
                 f"Found {len(promotions)} promotion(s) for {product.get('product_name')}"
             ),
         }
 
-        # Hand the candidate promos (each with its end date + is_expired flag)
-        # to the LLM and let *it* decide which to offer. Prompted only to "find
-        # the best deal", it greedily picks the largest discount — the expired
-        # one — even though the end date is right in front of it. That model
-        # choice (not a Python max()) is the reasoning failure this demo shows.
-        # A steer control on the Select Promotion step turns it around to a
-        # currently-valid promo.
-        proposed, steered = await self._select_promotion(
-            promotions, product.get("product_name"), list_price
-        )
+    @log(span_type="agent", name="Propose Promotion")
+    def _propose_promotion(
+        self,
+        product_name: str,
+        list_price: float,
+        proposed: Optional[Dict[str, Any]],
+        steered: bool,
+    ) -> Dict[str, Any]:
+        """The offer put to the customer after Select Promotion (and any steer).
+
+        Returns only the proposal fields; ``_check_promotions`` merges them into
+        the lookup result to form the tool receipt.
+        """
+        proposal: Dict[str, Any] = {}
         if steered:
-            result["steered_by_agent_control"] = True
+            proposal["steered_by_agent_control"] = True
 
         if proposed:
             proposed_discount = float(proposed["discount_usd"])
-            result.update({
+            proposal.update({
                 "proposed_promo_code": proposed["code"],
                 "proposed_promo_description": proposed["description"],
                 "proposed_discount_usd": proposed_discount,
-                "proposed_discount_pct": proposed.get("discount_pct", _discount_pct(proposed_discount)),
+                "proposed_discount_pct": proposed.get("discount_pct", _discount_pct(proposed_discount, list_price)),
                 "proposed_final_price": round(max(list_price - proposed_discount, 0.0), 2),
                 "proposed_promo_expired": proposed["expired"],
                 "proposed_promo_end_date": proposed["effective_until"],
                 "proposed_promo_last_updated_at": proposed.get("last_updated_at"),
                 "proposed_discount_tier": proposed["tier"],
             })
-
-            # Stash the offer so a follow-up "yes" applies this exact promo.
-            # No-op when there's no chat session (CLI/traffic generator).
-            remember_promo(self._chat_session_id, {
-                "product_name": product.get("product_name"),
-                "sku": sku,
-                "currency": currency,
-                "list_price": list_price,
-                "discount_usd": proposed_discount,
-                "discount_pct": proposed.get("discount_pct", _discount_pct(proposed_discount)),
-                "promo_code": proposed["code"],
-                "promo_description": proposed["description"],
-                "promo_end_date": proposed["effective_until"],
-                "promo_expired": bool(proposed["expired"]),
-                "promo_last_updated_at": proposed.get("last_updated_at"),
-                "discount_tier": proposed["tier"],
-            })
         else:
-            # No promo to put on the table: either none seeded, or the control
-            # steered us away from the only (expired) offer. Clear any stale
-            # pending promo so a later "yes" can't resurrect it, and flag the
-            # "no active promo" case so the synthesizer says so plainly.
-            clear_promo(self._chat_session_id)
-            if result.get("steered_by_agent_control"):
-                result["no_active_promo"] = True
-                result["status_message"] = (
-                    f"No active promotions available for {product.get('product_name')}"
-                )
+            # Steered away from the only (expired) offer: flag the "no active
+            # promo" case so the synthesizer says so plainly.
+            proposal["no_active_promo"] = True
+            proposal["status_message"] = f"No active promotions available for {product_name}"
 
-        return result
+        return proposal
 
     async def _select_promotion(
         self,

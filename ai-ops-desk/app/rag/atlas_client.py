@@ -7,10 +7,13 @@ for the AI Operations Desk.
 
 import os
 import logging
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from galileo import log
+
+from app.models.promo import promo_dates_for_tier
 
 logger = logging.getLogger(__name__)
 
@@ -182,14 +185,28 @@ class AtlasClient:
 
     @log(span_type="tool", name="Get Promos For SKU")
     async def get_promos_for_sku(self, sku: str) -> List[Dict[str, Any]]:
-        """Return promos for a SKU.
+        """Return promos for a SKU, with dates and ``expired`` derived at read time.
 
-        NOTE (intentional demo bug): this reads every promo for the SKU with no
-        ``effective_until`` filter, simulating a stale promo cache that serves
-        expired offers as if they were live.
+        Stored dates are ignored in favour of ``promo_dates_for_tier`` (nothing
+        is written back), so every reader sees the same dates in the same
+        format no matter when the collection was seeded.
+
+        NOTE (intentional demo gap): this returns every promo for the SKU with
+        no ``effective_until`` filter, so the expired offer is still a candidate
+        for the agent's Select Promotion step.
         """
-        results = list(self.db.promos.find({"sku": sku}))
-        return results
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        promos = []
+        for doc in self.db.promos.find({"sku": sku}):
+            dates = promo_dates_for_tier(doc.get("tier"), now)
+            doc.update(
+                effective_from=dates["effective_from"].isoformat(),
+                effective_until=dates["effective_until"].isoformat(),
+                last_updated_at=dates["last_updated_at"].isoformat(),
+                expired=dates["expired"],
+            )
+            promos.append(doc)
+        return promos
 
     @log(span_type="tool", name="Create Audit Record")
     async def create_audit_record(self, audit_data: Dict[str, Any]) -> bool:

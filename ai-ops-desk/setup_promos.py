@@ -8,33 +8,37 @@ Seeds discount offers for the catalog product. Two per product:
   - QMOBILE   (expired): the STALE deal — "QMobile" carrier promotion, $700 off,
                          expired ~7 days ago.
 
-QMOBILE is DELIBERATELY EXPIRED (``effective_until`` in the past): this is the
-stale data the agent's promo lookup surfaces as if it were still live. Because
-the agent proposes the *biggest* dollar discount, it reaches for the expired
-$700 QMobile deal over the live $200 Fall sale — the leak the demo catches.
-With the steer control on, it turns around and lands on the live FALL-SALE
-($200) instead.
+QMOBILE is DELIBERATELY EXPIRED (``effective_until`` in the past, ``expired``
+true). The promo lookup doesn't filter it out, and because the agent's Select
+Promotion step is told to offer the *biggest* dollar discount, it reaches for the
+expired $700 QMobile deal over the live $200 Fall sale even though the record
+says it's expired — the leak the demo catches. With the steer control on, it
+turns around and lands on the live FALL-SALE ($200) instead.
+
+The stored dates only matter for anyone browsing the collection: the app
+re-derives dates and ``expired`` from ``tier`` on every read (see
+``promo_dates_for_tier``), so the demo never drifts as the seed ages.
 
 Run after setup_products.py.
 """
 
 import asyncio
 from dataclasses import asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import List
 
 from dotenv import load_dotenv
 
 from app.rag.atlas_client import get_atlas_client
 from app.models.product import Product
-from app.models.promo import Promo
+from app.models.promo import Promo, promo_dates_for_tier
 from setup_products import PRODUCTS
 
 load_dotenv()
 
 
 def _build_promos(products: List[Product]) -> List[Promo]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     promos: List[Promo] = []
     for p in products:
         promos.append(
@@ -46,12 +50,8 @@ def _build_promos(products: List[Product]) -> List[Promo]:
                 discount_type="fixed",
                 discount_value=200.0,  # the RIGHT deal: $200 off
                 currency=p.currency,
-                effective_from=now - timedelta(days=10),
-                effective_until=now + timedelta(days=30),  # LIVE (valid)
-                tier="live",
-                expired=False,
-                # Freshly synced record — the live deal was updated recently.
-                last_updated_at=now - timedelta(days=1),
+                tier="live",  # valid for another 30 days
+                **promo_dates_for_tier("live", now),
             )
         )
         promos.append(
@@ -61,17 +61,10 @@ def _build_promos(products: List[Product]) -> List[Promo]:
                 sku=p.sku,
                 description="QMobile partner promotion — $700 off with QMobile activation",
                 discount_type="fixed",
-                discount_value=700.0,  # the STALE deal: $700 off (expired)
+                discount_value=700.0,  # the WRONG deal: $700 off (expired)
                 currency=p.currency,
-                effective_from=now - timedelta(days=45),
-                effective_until=now - timedelta(days=7),  # EXPIRED
-                tier="qmobile",
-                # STALE flag: the record still claims it's live even though the
-                # real end date passed a week ago...
-                expired=False,
-                # ...because the cache hasn't been refreshed in ~2 months. The
-                # old last_updated_at is the tell that this data is stale.
-                last_updated_at=now - timedelta(days=60),
+                tier="qmobile",  # ended 7 days ago
+                **promo_dates_for_tier("qmobile", now),
             )
         )
     return promos
