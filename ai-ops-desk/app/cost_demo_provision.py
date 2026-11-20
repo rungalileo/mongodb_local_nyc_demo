@@ -1,4 +1,9 @@
-"""One-click provisioning for the Integration-cost demo (LLM_Evals vs Luna_Evals).
+"""One-click provisioning for the Integration-cost demo (LLM_Evals vs Eval-G1).
+
+Note: "Eval-G1" is the rebrand of what Galileo used to call "Luna". A few
+internal parameter / request-field names (``luna_project``, ``luna_price``,
+``COST_DEMO_LUNA_PRICE``) keep the old spelling so the API/front-end wire
+contract doesn't break; they all drive the ``Eval-G1`` project.
 
 Powers the Ops-view "Extend cost graph" button. It continues the two cost curves
 from wherever they currently drop to $0 up to now, reproducing the dramatic
@@ -15,7 +20,7 @@ So we cannot show two different prices at once — we sequence:
   Phase 0: wait until nothing is scoring, so an earlier run's leftovers cannot
            be caught by Phase 1's price.
   Phase 1: set gpt-5-nano -> $1,830, inject LLM_Evals, drain its scoring.
-  Phase 2: set gpt-5-nano -> $80,    inject Luna_Evals (identical timestamps),
+  Phase 2: set gpt-5-nano -> $80,    inject Eval-G1 (identical timestamps),
            drain its scoring.
   Finally: remove the override so the real default returns (protects any live
            project — e.g. volt-assistant — that also scores on gpt-5-nano).
@@ -94,22 +99,22 @@ PROJECT_SPECS: List[Dict[str, Any]] = [
         "name": "LLM_Evals",
         "price": float(os.getenv("COST_DEMO_LLM_PRICE", "1830")),
         "scorers": [
-            ("3152f53d-aa2b-498e-a54b-87761460b51c", "Completeness - LLM"),
-            ("e2faa132-d8a3-4625-af92-df26e62dcdda", "Input Toxicity - LLM"),
-            ("c1c3810a-01c3-40e5-ab8b-930c905ab786", "Instruction Adherence - LLM"),
-            ("8f860cb8-41dc-4467-b885-0b37d3fa4275", "Output Toxicity - LLM"),
-            ("61a25589-7309-44bf-8a7c-64ea7a05219f", "Correctness-LLM"),
+            ("748c6127-9a72-4497-aace-f555759ff050", "Completeness - LLM"),
+            ("4150b947-9f66-44f6-92e6-31bc8a32c7c1", "Input Toxicity - LLM"),
+            ("bf94d820-7e06-4de2-8c26-f56e697f3817", "Instruction Adherence - LLM"),
+            ("469a03b4-faff-4133-b747-a99f70832b54", "Output Toxicity - LLM"),
+            ("8e6da478-1abe-4c0f-b3ec-26ce84147738", "Correctness - LLM"),
         ],
     },
     {
-        "name": "Luna_Evals",
+        "name": "Eval-G1",
         "price": float(os.getenv("COST_DEMO_LUNA_PRICE", "80")),
         "scorers": [
-            ("3bfa2b00-501c-48f7-873a-4fea1b49cca6", "Completeness - Luna v2"),
-            ("91f451a8-8ce1-47b6-b1c4-d2fd94882119", "Correctness-Luna v2"),
-            ("2f672e70-7d5f-485d-a52f-4f8d50362085", "Input Toxicity - Luna v2"),
-            ("90484133-91ee-4b7f-b39a-159b0ed5d15d", "Instruction Adherence - Luna v2"),
-            ("4fb7a0bb-84ac-4d39-b6f7-1277aa3b24ef", "Output Toxicity - Luna v2"),
+            ("d2233767-64d8-41cb-b1b6-fc7ec84abb49", "Completeness - Eval-G1"),
+            ("8a6685e9-72ee-46bf-a59a-22030701ee76", "Correctness - Eval-G1"),
+            ("ebac1300-62e7-46a6-b0ee-1ec5423f0b51", "Input Toxicity - Eval-G1"),
+            ("91067117-bb27-4be0-bfd6-2cd14979e2af", "Instruction Adherence - Eval-G1"),
+            ("e9fef415-e40b-4b77-ad14-2af0dd2eabbb", "Output Toxicity - Eval-G1"),
         ],
     },
 ]
@@ -608,7 +613,7 @@ def _wait_for_idle_scoring(client, ready: List[Dict[str, Any]], step: Dict[str, 
 
     A previous run can still be scoring when this one starts. The instant
     Phase 1 raises the price to the LLM-judge figure, those stragglers freeze at
-    it — which is how Luna_Evals ends up level with LLM_Evals instead of ~23x
+    it — which is how Eval-G1 ends up level with LLM_Evals instead of ~23x
     below it. The earlier run's window is outside ours, so scan a wide range.
     """
     end = datetime.now(timezone.utc)
@@ -659,7 +664,7 @@ def start_cost_demo(
     """Kick off the phased job in a background thread (one at a time).
 
     Leave ``llm_project`` / ``luna_project`` blank to target the real
-    ``LLM_Evals`` / ``Luna_Evals`` projects. Pass throwaway names to test the
+    ``LLM_Evals`` / ``Eval-G1`` projects. Pass throwaway names to test the
     flow against disposable projects (same metrics, deletable afterwards via
     ``delete_cost_demo_projects``).
     """
@@ -826,7 +831,7 @@ def start_cost_fix(
     seed: int = SEED,
 ) -> Dict[str, Any]:
     """Kick off a scoring-gap heal in the background. Scans BOTH projects and
-    heals whichever dipped (LLM_Evals @ $1,830 and/or Luna_Evals @ $80). Pass
+    heals whichever dipped (LLM_Evals @ $1,830 and/or Eval-G1 @ $80). Pass
     throwaway names to heal test-mode sandbox projects instead."""
     specs = _build_specs(llm_project, luna_project, llm_price, luna_price)
     with _LOCK:
@@ -855,7 +860,7 @@ def start_cost_fix(
 
 def delete_cost_demo_projects(names: List[str]) -> Dict[str, Any]:
     """Delete throwaway test projects by name. Refuses the protected real
-    projects (``LLM_Evals`` / ``Luna_Evals``) so a test cleanup can never wipe
+    projects (``LLM_Evals`` / ``Eval-G1``) so a test cleanup can never wipe
     the live demo data."""
     from galileo.projects import Projects
 

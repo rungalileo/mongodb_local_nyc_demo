@@ -97,7 +97,7 @@ class CostDemoRequest(BaseModel):
 
     Everything defaults: leave start/end blank to continue each project's cost
     curve from the last day it dropped to $0 up to now. The phased job sets the
-    evaluator model price to $1,830 (LLM_Evals) then $80 (Luna_Evals), injects
+    evaluator model price to $1,830 (LLM_Evals) then $80 (Eval-G1), injects
     identical-timestamp traffic into each, waits for scoring, then removes the
     price override.
     """
@@ -105,7 +105,7 @@ class CostDemoRequest(BaseModel):
     end: Optional[str] = None
     tz_name: str = "America/Los_Angeles"
     seed: int = 7
-    # Leave blank to target the real LLM_Evals / Luna_Evals projects. Set to
+    # Leave blank to target the real LLM_Evals / Eval-G1 projects. Set to
     # throwaway names to test the flow against disposable projects.
     llm_project: Optional[str] = None
     luna_project: Optional[str] = None
@@ -115,7 +115,7 @@ class CostDemoRequest(BaseModel):
 
 class CostDemoDeleteRequest(BaseModel):
     """Delete throwaway test projects created by a cost-demo test run. The real
-    LLM_Evals / Luna_Evals projects are protected and cannot be deleted here."""
+    LLM_Evals / Eval-G1 projects are protected and cannot be deleted here."""
     names: List[str]
 
 
@@ -128,7 +128,7 @@ class LiveTargetRequest(BaseModel):
 class CostDemoFixRequest(BaseModel):
     """Heal scoring gaps (e.g. a $0 day from an evaluator system error). Scans
     BOTH projects and re-injects whichever dipped at its correct frozen price
-    (LLM_Evals @ $1,830, Luna_Evals @ $80). Leave start/end blank to auto-detect
+    (LLM_Evals @ $1,830, Eval-G1 @ $80). Leave start/end blank to auto-detect
     the broken window per project; pass throwaway names to heal sandbox projects."""
     llm_project: Optional[str] = None
     luna_project: Optional[str] = None
@@ -214,7 +214,7 @@ async def create_promo_demo(req: PromoDemoRequest):
 
 @app.post("/api/ops/cost_demo")
 async def start_cost_demo_endpoint(req: CostDemoRequest):
-    """Kick off the phased Integration-cost injection (LLM_Evals + Luna_Evals).
+    """Kick off the phased Integration-cost injection (LLM_Evals + Eval-G1).
 
     Returns immediately; the work runs in a background thread because it sets
     org-wide model prices and waits for async scoring between the two projects.
@@ -315,7 +315,7 @@ async def cost_demo_fix_endpoint(req: CostDemoFixRequest):
 
 @app.post("/api/ops/cost_demo/delete")
 async def cost_demo_delete_endpoint(req: CostDemoDeleteRequest):
-    """Delete throwaway test projects (real LLM_Evals / Luna_Evals protected)."""
+    """Delete throwaway test projects (real LLM_Evals / Eval-G1 protected)."""
     from app.cost_demo_provision import delete_cost_demo_projects
 
     try:

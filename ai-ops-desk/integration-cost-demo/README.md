@@ -85,7 +85,7 @@ Run the injector **twice with the same `--seed`, `--start`, `--end`, `--tz`, and
 
 # Luna project — SAME window/seed => identical overlay
 ./.venv/bin/python integration-cost-demo/inject_cost_traces.py \
-    --project "Luna-evals" --log-stream "Default" \
+    --project "Eval-G1" --log-stream "Default" \
     --traces 1000 --num-metrics 5 --seed 7 --end "2026-08-20T15:00:00"
 ```
 

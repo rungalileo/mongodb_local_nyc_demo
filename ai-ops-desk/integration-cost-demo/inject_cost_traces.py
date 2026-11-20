@@ -61,7 +61,7 @@ script also works from any directory since it self-locates the package root):
 
     # then the Luna project, SAME window -> identical timestamps for overlay
     ./.venv/bin/python integration-cost-demo/inject_cost_traces.py \
-        --project "Luna-evals" --log-stream "Default" \
+        --project "Eval-G1" --log-stream "Default" \
         --traces 1000 --num-metrics 5 --end "2026-08-20T15:00:00"
 
 Requires the same Galileo env as the app (GALILEO_API_KEY, GALILEO_API_URL,

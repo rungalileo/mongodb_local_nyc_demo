@@ -80,7 +80,7 @@ total, settled = m._poll_scoring(None, "p", "s", "e", step)
 check("ignores cent-level jitter", settled is True, f"total=${total:,.2f}")
 
 # 5) Pre-flight idle check: quiet only once BOTH projects are quiet.
-ready = [{"name": "LLM_Evals", "project_id": "a"}, {"name": "Luna_Evals", "project_id": "b"}]
+ready = [{"name": "LLM_Evals", "project_id": "a"}, {"name": "Eval-G1", "project_id": "b"}]
 idx = {"a": 0, "b": 0}
 moves = {"a": [10] * 12, "b": [5, 9, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14]}
 
