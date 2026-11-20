@@ -82,10 +82,10 @@ async def find_catalog_product(query_text: str) -> Optional[Dict[str, Any]]:
 
 @log(span_type="workflow", name="Get Product Promotions")
 async def get_product_promotions(sku: str) -> List[Dict[str, Any]]:
-    """Fetch promos for a SKU from the (stale) promo store.
+    """Fetch promos for a SKU from the promo store.
 
-    Returns promos WITHOUT filtering on effective_until, mirroring the stale
-    cache the demo is built around.
+    Returns promos WITHOUT filtering on effective_until, so the expired offer
+    stays in the candidate list the agent picks from.
     """
     client = get_atlas_client()
     return await client.get_promos_for_sku(sku)

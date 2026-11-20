@@ -13,10 +13,13 @@ injected trace is indistinguishable from a real one:
       Action Agent (workflow)
         ├─ Classify Sentiment (llm)         -> neutral (asking a question)
         ├─ Determine Tools (agent)          -> ["check_promotions"]
-        └─ Check Promotions (tool)          -- both promos w/ end dates
-              └─ Select Promotion (llm)     -- the model PICKS one; on a mistake
-                                               it picks the expired $700 (it saw
-                                               the end date, never reasoned "past")
+        ├─ Check Promotions (tool)          -- both promos w/ end dates + expired
+        │     ├─ Find Catalog Product → Find Product
+        │     └─ Get Product Promotions → Get Promos For SKU
+        ├─ Select Promotion (llm)           -- the model PICKS one; on a mistake
+        │                                      it picks the expired $700 (it saw
+        │                                      the end date, never reasoned "past")
+        └─ Propose Promotion (agent)        -- the offer put to the customer
       Synthesizer Agent (workflow)
         └─ Synthesizer Agent Process (agent) -- templated propose reply (NO llm),
                                                 states the promo's end date
@@ -91,6 +94,7 @@ import json
 import os
 import random
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -101,6 +105,7 @@ import app.tls_trust  # noqa: F401  (make Python trust the OS cert store / corp 
 
 from galileo.logger.logger import GalileoLogger
 
+from app.models.promo import promo_dates_for_tier
 from setup_products import PRODUCTS
 
 # Promo definitions mirror setup_promos.py so seeded traffic matches the app.
@@ -219,12 +224,19 @@ def _meta_num(value: float) -> str:
     return f"{float(value):.2f}"
 
 
-def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
+def _naive_utc(dt: datetime) -> datetime:
+    """Naive UTC, the format the live read path renders promo dates in."""
+    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _plan_session(kind: str, rng: random.Random, t0: datetime) -> Dict[str, Any]:
     """Decide product + promo + dollar amount + per-turn copy for a ``kind``.
 
     ``kind`` is ``"mistake"`` (applies the expired $700 QMobile deal — the leak)
     or ``"correct"`` (applies the live $200 Fall sale — the baseline). There's a
     single catalog product (the $1,000 phone), so every session is about it.
+    Promo dates are anchored to the session's own start ``t0``, as the live
+    app anchors them to the moment of the request.
 
     Sentiment is classified PER TURN, exactly like the live app: turn 1 (just
     asking "any discount?") reads ``neutral`` for both kinds; the turn-2
@@ -237,15 +249,10 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
     product = PRODUCTS[0]
     list_price = float(product.unit_price)
     currency = product.currency
-    now = datetime.now(timezone.utc)
 
     if kind == "mistake":
         promo = EXPIRED_PROMO
         discount = round(min(EXPIRED_DISCOUNT_USD, list_price), 2)  # $700 off
-        promo_expired = True
-        end_date = (now - timedelta(days=7)).isoformat()
-        # Stale record: expiry flag last refreshed ~2 months ago.
-        last_updated_at = (now - timedelta(days=60)).isoformat()
         discount_type = "fixed"
         # Turn-2 "yes" is enthusiastic (delighted by the big deal) -> positive.
         turn2_user = (
@@ -256,14 +263,15 @@ def _plan_session(kind: str, rng: random.Random) -> Dict[str, Any]:
     else:
         promo = LIVE_PROMO
         discount = round(min(LIVE_DISCOUNT_USD, list_price), 2)  # $200 off
-        promo_expired = False
-        end_date = (now + timedelta(days=30)).isoformat()
-        # Freshly synced record.
-        last_updated_at = (now - timedelta(days=1)).isoformat()
         discount_type = "fixed"
         # Turn-2 "yes" is a plain confirmation -> neutral.
         turn2_user = "Yes, apply it."
         turn2_sentiment = "neutral"
+
+    dates = promo_dates_for_tier(promo["tier"], _naive_utc(t0))
+    promo_expired = dates["expired"]
+    end_date = dates["effective_until"].isoformat()
+    last_updated_at = dates["last_updated_at"].isoformat()
 
     final_price = round(max(list_price - discount, 0.0), 2)
     discount_pct = int(round(discount / list_price * 100)) if list_price > 0 else 0
@@ -332,53 +340,102 @@ def _apply_output(p: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _check_output(p: Dict[str, Any], t0: datetime) -> Dict[str, Any]:
-    """Build the ``Check Promotions`` tool output (turn 1): both promos with
-    end dates + a code-computed ``expired`` flag, mirroring the live tool.
+def _product_doc(sku: str) -> Dict[str, Any]:
+    """The ``Find Product`` output: the catalog document for ``sku``."""
+    return next(asdict(x) for x in PRODUCTS if x.sku == sku)
 
-    The live promo reads as freshly synced; the expired one carries an old
-    ``last_updated_at`` — the stale record whose expiry flag was never refreshed.
-    """
+
+def _promo_docs(p: Dict[str, Any], t0: datetime) -> List[Dict[str, Any]]:
+    """The ``Get Promos For SKU`` output: both seeded promos, with dates and
+    ``expired`` derived from ``tier`` relative to ``t0`` exactly as the live
+    read path (``AtlasClient.get_promos_for_sku``) derives them."""
+    now = _naive_utc(t0)
+    docs = []
+    for suffix, promo, value in (
+        ("fall", LIVE_PROMO, LIVE_DISCOUNT_USD),
+        ("qmobile", EXPIRED_PROMO, EXPIRED_DISCOUNT_USD),
+    ):
+        dates = promo_dates_for_tier(promo["tier"], now)
+        docs.append({
+            "_id": f"promo_{p['sku']}_{suffix}",
+            "code": promo["code"],
+            "sku": p["sku"],
+            "description": promo["description"],
+            "discount_type": "fixed",
+            "discount_value": value,
+            "currency": p["currency"],
+            "effective_from": dates["effective_from"].isoformat(),
+            "effective_until": dates["effective_until"].isoformat(),
+            "tier": promo["tier"],
+            "expired": dates["expired"],
+            "last_updated_at": dates["last_updated_at"].isoformat(),
+        })
+    return docs
+
+
+def _check_output(p: Dict[str, Any], docs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Build the ``Check Promotions`` tool output (turn 1), mirroring the live
+    lookup: both promos with end dates and ``expired`` flags, and no proposal
+    (that's the later ``Propose Promotion`` step)."""
+    promotions = []
+    for d in docs:
+        usd = round(float(d["discount_value"]), 2)
+        promotions.append({
+            "code": d["code"],
+            "description": d["description"],
+            "discount_type": d["discount_type"],
+            "discount_value": d["discount_value"],
+            "tier": d["tier"],
+            "effective_until": d["effective_until"],
+            "expired": d["expired"],
+            "last_updated_at": d["last_updated_at"],
+            "discount_usd": usd,
+            "discount_pct": _pct(usd, p["list_price"]),
+        })
     return {
+        "status": 200,
         "product_name": p["product_name"],
         "sku": p["sku"],
-        "currency": p["currency"],
         "list_price": p["list_price"],
-        "has_expired_promo": True,
-        "promotions": [
-            {"code": LIVE_PROMO["code"], "expired": False,
-             "last_updated_at": (t0 - timedelta(days=1)).isoformat(),
-             "discount_usd": LIVE_DISCOUNT_USD,
-             "discount_pct": _pct(LIVE_DISCOUNT_USD, p["list_price"])},
-            {"code": EXPIRED_PROMO["code"], "expired": True,
-             "last_updated_at": (t0 - timedelta(days=60)).isoformat(),
-             "discount_usd": min(EXPIRED_DISCOUNT_USD, p["list_price"]),
-             "discount_pct": _pct(min(EXPIRED_DISCOUNT_USD, p["list_price"]), p["list_price"])},
-        ],
-        "proposed_promo_code": p["promo_code"],
-        "proposed_discount_usd": p["discount_usd"],
-        "proposed_discount_pct": p["discount_pct"],
-        "proposed_promo_expired": p["promo_expired"],
+        "currency": p["currency"],
+        "promotions": promotions,
+        "has_expired_promo": any(x["expired"] for x in promotions),
+        "status_message": f"Found {len(promotions)} promotion(s) for {p['product_name']}",
     }
 
 
-def _select_prompt(p: Dict[str, Any], t0: datetime) -> str:
+def _propose_output(p: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the ``Propose Promotion`` output (turn 1), mirroring the live
+    ``ActionAgent._propose_promotion``. Injected sessions model control-off
+    traffic, so there is never a steer."""
+    return {
+        "proposed_promo_code": p["promo_code"],
+        "proposed_promo_description": p["promo_description"],
+        "proposed_discount_usd": p["discount_usd"],
+        "proposed_discount_pct": p["discount_pct"],
+        "proposed_final_price": p["final_price"],
+        "proposed_promo_expired": p["promo_expired"],
+        "proposed_promo_end_date": p["promo_end_date"],
+        "proposed_promo_last_updated_at": p["promo_last_updated_at"],
+        "proposed_discount_tier": p["discount_tier"],
+    }
+
+
+def _select_prompt(p: Dict[str, Any], docs: List[Dict[str, Any]]) -> str:
     """Reconstruct the live ``Select Promotion`` prompt (``_llm_pick_promo``):
     lists each promo's end date but no pre-computed expiry and no today's date,
     and asks only for the LARGEST discount."""
-    cur = p["currency"]
-    live_end = (t0 + timedelta(days=30)).isoformat()
-    expired_end = (t0 - timedelta(days=7)).isoformat()
+    catalog = "\n".join(
+        f'- code={d["code"]}; discount=${float(d["discount_value"]):.0f} off; '
+        f'ends {d["effective_until"]}; offer="{d["description"]}"'
+        for d in docs
+    )
     return (
         f"You are Voltway's shopping assistant helping a customer buy the "
-        f"{p['product_name']} (list price {cur} {_money(p['list_price'])}). Your "
+        f"{p['product_name']} (list price ${float(p['list_price']):.0f}). Your "
         f"priority is to maximize the customer's savings and close the sale, so "
         f"offer the single promotion with the LARGEST discount.\n\n"
-        f"Available promotions:\n"
-        f'- code={LIVE_PROMO["code"]}; discount=$200 off; ends {live_end}; '
-        f'offer="{LIVE_PROMO["description"]}"\n'
-        f'- code={EXPIRED_PROMO["code"]}; discount=$700 off; ends {expired_end}; '
-        f'offer="{EXPIRED_PROMO["description"]}"\n\n'
+        f"Available promotions:\n{catalog}\n\n"
         f"Respond with ONLY the promotion code you choose."
     )
 
@@ -438,11 +495,13 @@ def _trace_state(user_q: str) -> str:
 def _inject_turn1(logger: GalileoLogger, p: Dict[str, Any], t0: datetime) -> None:
     """Turn 1 — the "any discount?" search trace.
 
-    Span tree (identical to a real promo turn-1 run):
+    Span tree (identical to a real promo turn-1 run with the control off):
       ops_desk_run
         Router → Classify Intent (llm)
         Action Agent → Classify Sentiment (llm), Determine Tools (agent),
-                       Check Promotions (tool) → Select Promotion (llm)
+                       Check Promotions (tool) → Find Catalog Product → Find Product,
+                                                 Get Product Promotions → Get Promos For SKU,
+                       Select Promotion (llm), Propose Promotion (agent)
         Synthesizer Agent → Synthesizer Agent Process (agent, templated propose)
     """
     user_q = p["turn1_user"]
@@ -504,40 +563,68 @@ def _inject_turn1(logger: GalileoLogger, p: Dict[str, Any], t0: datetime) -> Non
     )
     logger.conclude(output=json.dumps(["check_promotions"]))  # pop Determine Tools → Action
 
-    # Check Promotions (tool) with a nested Select Promotion (llm) child. The
-    # manual logger API doesn't push a tool span as the current parent, so we
-    # set it explicitly (mirrors the @log(tool) decorator wrapping the llm call).
-    check_out = _check_output(p, t0)
+    # Check Promotions (tool) wraps the two data-layer lookups. The manual
+    # logger API doesn't push a tool span as the current parent, so we set it
+    # explicitly (mirrors the @log(tool) decorator wrapping those calls).
+    product_doc = _product_doc(p["sku"])
+    docs = _promo_docs(p, t0)
+    check_out = _check_output(p, docs)
     tool_span = logger.add_tool_span(
-        input=json.dumps({"query": user_q, "sku": p["sku"]}),
+        input=json.dumps({"user_query": user_q}),
         output=json.dumps(check_out), name="Check Promotions", created_at=at(0.50),
-        duration_ns=120_000_000, status_code=200,
-        metadata={
-            "has_expired_promo": "true",
-            "proposed_promo_code": p["promo_code"],
-            "proposed_promo_expired": str(p["promo_expired"]).lower(),
-        },
+        duration_ns=140_000_000, status_code=200,
     )
-    logger._set_current_parent(tool_span)  # nest the next span under Check Promotions
+    logger._set_current_parent(tool_span)
+    logger.add_workflow_span(
+        input=json.dumps({"query_text": user_q}), name="Find Catalog Product",
+        created_at=at(0.52),
+    )
+    logger.add_tool_span(
+        input=json.dumps({"query_text": user_q}), output=json.dumps(product_doc),
+        name="Find Product", created_at=at(0.53), duration_ns=40_000_000,
+    )
+    logger.conclude(output=json.dumps(product_doc), duration_ns=45_000_000)  # → Check Promotions
+    logger.add_workflow_span(
+        input=json.dumps({"sku": p["sku"]}), name="Get Product Promotions",
+        created_at=at(0.58),
+    )
+    logger.add_tool_span(
+        input=json.dumps({"sku": p["sku"]}), output=json.dumps(docs),
+        name="Get Promos For SKU", created_at=at(0.59), duration_ns=40_000_000,
+    )
+    logger.conclude(output=json.dumps(docs), duration_ns=45_000_000)  # → Check Promotions
+    logger._set_current_parent(action_parent)  # back up to Action Agent
+
+    # Select Promotion (llm) then Propose Promotion (agent) run AFTER the
+    # lookup, as siblings under Action Agent — same order as the live app.
     logger.add_llm_span(
-        input=_select_prompt(p, t0), output=p["promo_code"], model="gpt-4o-mini",
+        input=_select_prompt(p, docs), output=p["promo_code"], model="gpt-4o-mini",
         name="Select Promotion", created_at=at(0.70), duration_ns=150_000_000,
         num_input_tokens=_TOK_SELECT[0], num_output_tokens=_TOK_SELECT[1],
         total_tokens=sum(_TOK_SELECT),
         metadata={"chosen_promo_code": p["promo_code"],
                   "chosen_promo_expired": str(p["promo_expired"]).lower()},
     )
-    logger._set_current_parent(action_parent)  # back up to Action Agent
-    logger.conclude(output=json.dumps(check_out))  # pop Action Agent → trace
+    propose_out = _propose_output(p)
+    selected = next(x for x in check_out["promotions"] if x["code"] == p["promo_code"])
+    logger.add_agent_span(
+        input=json.dumps({"product_name": p["product_name"], "list_price": p["list_price"],
+                          "proposed": selected, "steered": False}),
+        output=json.dumps(propose_out), name="Propose Promotion",
+        created_at=at(0.86), duration_ns=1_000_000,
+    )
+    logger.conclude(output=json.dumps(propose_out))  # pop Propose Promotion → Action
+    receipt = {**check_out, **propose_out}
+    logger.conclude(output=json.dumps(receipt))  # pop Action Agent → trace
 
     # Synthesizer Agent → Process. Turn-1 propose is TEMPLATED in the live app
     # (no LLM call), so there is intentionally no llm span here.
     propose = _propose_text(p)
     logger.add_workflow_span(
-        input=json.dumps(check_out), name="Synthesizer Agent", created_at=at(0.95),
+        input=json.dumps(receipt), name="Synthesizer Agent", created_at=at(0.95),
     )
     logger.add_agent_span(
-        input=json.dumps(check_out), output=propose,
+        input=json.dumps(receipt), output=propose,
         name="Synthesizer Agent Process", created_at=at(0.97), duration_ns=2_000_000,
     )
     logger.conclude(output=propose)  # pop Process → Synthesizer Agent
@@ -768,10 +855,10 @@ def inject_sessions(
     leaked_total = 0.0
     expired_applied = 0
     for i, kind in enumerate(kinds):
-        p = _plan_session(kind, rng)
         # ``starts`` is ascending; ``kinds`` is shuffled, so expired-promo
         # mistakes are sprinkled across the whole window rather than clumped.
         t0 = starts[i]
+        p = _plan_session(kind, rng, t0)
         _inject_one(logger, p, t0)
 
         if p["promo_expired"]:

@@ -32,11 +32,12 @@ The agent:
 
 1. Classifies the intent as `promo_inquiry`.
 2. Calls **`check_promotions`**, which returns the **full, honest** promo list —
-   every candidate with its `effective_until` end date. The tool also computes an
-   `expired` flag for each (used by the trace signals + guardrail). Both the
-   expired `QMOBILE` ($700 off) and the live `FALL-SALE` ($200 off) come back. End
-   dates are anchored to *today* (live ≈ +30d, stale ≈ −7d) so the split holds on
-   any demo day.
+   every candidate with its `effective_until` end date and an `expired` flag
+   (used by the trace signals + guardrail). Both the expired `QMOBILE` ($700 off)
+   and the live `FALL-SALE` ($200 off) come back. The data layer
+   (`get_promos_for_sku`) derives dates and `expired` from each promo's tier at
+   read time (live ≈ +30d, expired ≈ −7d, never written back to Mongo), so the
+   split holds on any demo day and every span shows the same dates.
 3. Runs the **`Select Promotion`** LLM step (temperature 0). The prompt lists each
    promo's **end date but no pre-computed expiry verdict and no "today's date"**,
    and tells the model only to offer the **largest discount**. It greedily picks
@@ -151,7 +152,7 @@ Added:
 
 Changed:
 - `app/rag/atlas_client.py` — `get_catalog_products`, `find_product`,
-  `get_promos_for_sku` (stale, unfiltered).
+  `get_promos_for_sku` (unfiltered; dates + `expired` derived at read time).
 - `app/rag/queries.py` — `find_catalog_product`, `get_product_promotions`.
 - `app/session_cache.py` — `remember_promo` / `recall_promo` / `clear_promo`
   for the two-turn "promo in focus".
@@ -254,8 +255,12 @@ On the **`Apply Discount`** span (tool span):
 - **Output** (JSON): `promo_expired` (bool), `discount_usd` (number),
   `final_price`, `promo_code`, `product_name`, `sku`, `currency`.
 
-On the **`Check Promotions`** span:
+On the **`Check Promotions`** span (the lookup only):
 - **Output**: `has_expired_promo` (bool), `promotions[].expired` (bool).
+
+On the **`Propose Promotion`** span (after `Select Promotion` and any steer):
+- **Output**: `proposed_promo_code`, `proposed_promo_expired` (bool),
+  `proposed_discount_usd`, `steered_by_agent_control` (when steered).
 
 ### 1) Signal — flag runs that applied an expired promo
 
